@@ -252,7 +252,6 @@ void thread_sleep(int64_t ticks)
     struct thread* cur = thread_current();
     ASSERT(cur != idle_thread);
 
-    
     cur->wakeup_clock = ticks;
     list_push_back(&sleep_list, &cur->elem);
     thread_block();
