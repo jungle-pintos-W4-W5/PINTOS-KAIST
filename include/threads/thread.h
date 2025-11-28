@@ -10,6 +10,8 @@
 #endif
 
 
+void thread_sleep(int64_t ticks);
+void thread_awake(int64_t ticks);
 /* States in a thread's life cycle. */
 enum thread_status {
 	THREAD_RUNNING,     /* Running thread. */
@@ -91,6 +93,7 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
+    int wakeup_clock;
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */

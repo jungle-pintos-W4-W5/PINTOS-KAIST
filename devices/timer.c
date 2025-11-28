@@ -8,6 +8,7 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 
+
 /* See [8254] for hardware details of the 8254 timer chip. */
 
 #if TIMER_FREQ < 19
@@ -73,10 +74,10 @@ timer_calibrate (void) {
 /* Returns the number of timer ticks since the OS booted. */
 int64_t
 timer_ticks (void) {
-	enum intr_level old_level = intr_disable ();
+	enum intr_level old_level = intr_disable (); // 인터럽트 off
 	int64_t t = ticks;
-	intr_set_level (old_level);
-	barrier ();
+	intr_set_level (old_level); // 인터럽트 on
+	barrier (); // 최적화 장벽으로 컴파일러의 재배치 최적화를 강제로 중단하는 역할을 함 (동기화 문제, 하드웨어 상호작용)
 	return t;
 }
 
@@ -91,10 +92,7 @@ timer_elapsed (int64_t then) {
 void
 timer_sleep (int64_t ticks) {
 	int64_t start = timer_ticks ();
-
-	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+	thread_sleep(start + ticks);
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -126,6 +124,7 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
 	thread_tick ();
+    thread_awake(ticks);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
