@@ -75,7 +75,6 @@ jobs:
               fi
               
               cd build
-              rm -rf tests/threads/mlfqs
               make check VERBOSE=1 || true
               
               result_files=$(find tests -name '*.result' 2>/dev/null | sort)
