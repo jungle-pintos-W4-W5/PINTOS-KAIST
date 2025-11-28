@@ -91,9 +91,8 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
-
-	/* Shared between thread.c and synch.c. */
-	struct list_elem elem;              /* List element. */
+	struct list_elem elem;              /* List element - Shared between thread.c and synch.c. */
+	int wake_tick;
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -113,6 +112,7 @@ struct thread {
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
+struct list sleeping_list; // 전역 변수로 선언 
 
 void thread_init (void);
 void thread_start (void);
