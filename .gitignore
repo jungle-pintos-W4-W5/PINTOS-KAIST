@@ -4,6 +4,8 @@
 
 # 9기 디버그 유틸
 **/.test_status
+*.test_status
+.test_status
 
 .vscode/
 
