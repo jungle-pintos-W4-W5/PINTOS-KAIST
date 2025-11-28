@@ -28,6 +28,8 @@ static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
+static void check_sleepers(int current_ticks);
+static bool wake_early (const struct list_elem *a, const struct list_elem *b, void *aux);
 
 /* Sets up the 8254 Programmable Interval Timer (PIT) to
    interrupt PIT_FREQ times per second, and registers the
@@ -88,13 +90,28 @@ timer_elapsed (int64_t then) {
 }
 
 /* Suspends execution for approximately TICKS timer ticks. */
+static bool wake_early (const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+		struct thread *thread_a = list_entry(a, struct thread, elem);
+		struct thread *thread_b = list_entry(b, struct thread, elem);
+		return thread_a->wake_tick < thread_b->wake_tick;
+}
+
 void
 timer_sleep (int64_t ticks) {
-	int64_t start = timer_ticks ();
 
 	ASSERT (intr_get_level () == INTR_ON);
-	while (timer_elapsed (start) < ticks)
-		thread_yield ();
+	
+	enum intr_level old_level = intr_disable (); 
+	struct thread *t = thread_current();
+
+	t->wake_tick = timer_ticks () + ticks;	// 일어날 시간 = 현재 시간 + 자는 시간
+
+	list_insert_ordered(&sleeping_list, &t->elem, wake_early, NULL);
+	thread_block();
+
+	intr_set_level (old_level);
+	
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -120,12 +137,33 @@ void
 timer_print_stats (void) {
 	printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
+
+static void check_sleepers(int current_ticks) {
+    struct list_elem *e = list_begin(&sleeping_list);
+
+    while (e != list_end(&sleeping_list)) {
+        struct thread *t = list_entry(e, struct thread, elem);
+        if (t->wake_tick > current_ticks)
+            break;
+
+        struct list_elem *next = list_next(e); // remove 전에 미리 저장
+        list_remove(e);
+        thread_unblock(t);
+        e = next;
+    }
+}
 
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
 	ticks++;
 	thread_tick ();
+
+	enum intr_level old_level = intr_disable ();
+
+	check_sleepers(ticks);
+
+	intr_set_level (old_level);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
