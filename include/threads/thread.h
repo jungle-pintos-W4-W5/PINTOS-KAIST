@@ -117,6 +117,8 @@ struct list sleeping_list;
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 struct list sleeping_list; // 전역 변수로 선언 
+bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux); // 높은 우선순위 순서 기준 내림차순 정렬 용도
+void yield_if_lower (void); // 우선순위가 낮을 시 조건부로 양보
 
 void thread_init (void);
 void thread_start (void);

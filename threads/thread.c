@@ -207,8 +207,7 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
-	if (priority > thread_current()->priority)
-		thread_yield();
+	yield_if_lower();
 
 	return tid;
 }
@@ -316,11 +315,7 @@ void
 thread_set_priority (int new_priority) {
 	thread_current ()->priority = new_priority;
 	
-	if (!list_empty(&ready_list)) {
-		struct thread*t = list_entry(list_begin(&ready_list), struct thread, elem);
-		if (t->priority > new_priority)
-			thread_yield();
-	}
+	yield_if_lower();
 }
 
 /* Returns the current thread's priority. */
@@ -598,10 +593,25 @@ allocate_tid (void) {
 	return tid;
 }
 
+/* 더 높은 우선순위의 기준으로 정렬을 할 때 필요한 list_less_func 헬퍼 함수 */
+/* list_insert_ordered(), list_sort, list_max() 등에 쓸 수 있다 */
 bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux)
 {
 		struct thread *thread_a = list_entry(a, struct thread, elem);
 		struct thread *thread_b = list_entry(b, struct thread, elem);
 
 		return thread_a->priority > thread_b->priority;
+}
+
+/* ready_list가 비어있지 않다는 전제 하에 */
+/* 현재 쓰레드가 ready_list 최상단 쓰레드보다 우선순위가 낮다면 양보하는 조건부 함수 */
+void yield_if_lower(void) {
+	if (!list_empty(&ready_list)) {
+
+		struct thread* first_ready = list_entry(list_front(&ready_list), struct thread, elem); 
+		struct thread* current = thread_current();
+
+		if (current->priority < first_ready->priority)
+			thread_yield();
+	}
 }
