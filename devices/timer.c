@@ -94,19 +94,20 @@ static bool wake_early (const struct list_elem *a, const struct list_elem *b, vo
 {
 		struct thread *thread_a = list_entry(a, struct thread, elem);
 		struct thread *thread_b = list_entry(b, struct thread, elem);
+
 		return thread_a->wake_tick < thread_b->wake_tick;
 }
 
 void
-timer_sleep (int64_t ticks) {
-
+timer_sleep (int64_t ticks) 
+{
 	ASSERT (intr_get_level () == INTR_ON);
 	enum intr_level old_level = intr_disable (); 
-	struct thread *t = thread_current();
+	struct thread *curr = thread_current();
 
-	t->wake_tick = timer_ticks () + ticks;	// 일어날 시간 = 현재 시간 + 자는 시간
+	curr->wake_tick = timer_ticks () + ticks;	// 일어날 시간 = 현재 시간 + 자는 시간
 
-	list_insert_ordered(&sleeping_list, &t->elem, wake_early, NULL);
+	list_insert_ordered(&sleeping_list, &curr->elem, wake_early, NULL);
 	thread_block();
 
 	intr_set_level (old_level);
@@ -137,31 +138,32 @@ timer_print_stats (void) {
 	printf ("Timer: %"PRId64" ticks\n", timer_ticks ());
 }
 
-static void check_sleepers(int current_ticks) {
-    struct list_elem *e = list_begin(&sleeping_list);
+static void check_sleepers(int current_ticks) 
+{
+	if (!list_empty(&sleeping_list)) {
+		struct list_elem *e = list_begin(&sleeping_list);
 
-    while (e != list_end(&sleeping_list)) {
-        struct thread *t = list_entry(e, struct thread, elem);
-        if (t->wake_tick > current_ticks)
-            break;
+		while (e != list_end(&sleeping_list)) {
+			struct thread *t = list_entry(e, struct thread, elem);
+			struct list_elem *next = list_next(e); // remove 전에 미리 저장
+			if (t->wake_tick > current_ticks)
+				break;
 
-        struct list_elem *next = list_next(e); // remove 전에 미리 저장
-        list_remove(e);
-        thread_unblock(t);
-        e = next;
-    }
+			list_remove(e);
+			thread_unblock(t);
+			e = next;
+		}
+	}
 }
 
 /* Timer interrupt handler. */
 static void
-timer_interrupt (struct intr_frame *args UNUSED) {
+timer_interrupt (struct intr_frame *args UNUSED) 
+{
 	enum intr_level old_level = intr_disable();
 
 	ticks++;
 	thread_tick ();
-
-	enum intr_level old_level = intr_disable ();
-
 	check_sleepers(ticks);
 
 	intr_set_level (old_level);
