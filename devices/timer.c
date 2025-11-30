@@ -155,6 +155,8 @@ static void check_sleepers(int current_ticks) {
 /* Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED) {
+	enum intr_level old_level = intr_disable();
+
 	ticks++;
 	thread_tick ();
 
