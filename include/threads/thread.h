@@ -91,7 +91,9 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
-	struct list_elem elem;              /* List element - Shared between thread.c and synch.c. */
+
+	/* Shared between thread.c and synch.c. */
+	struct list_elem elem;              /* List element. */
 	int wake_tick;
 
 #ifdef USERPROG
@@ -107,6 +109,8 @@ struct thread {
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
 };
+
+struct list sleeping_list;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
