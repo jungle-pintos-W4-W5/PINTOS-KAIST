@@ -207,6 +207,8 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
+	if (priority > thread_current()->priority)
+		thread_yield();
 
 	return tid;
 }
@@ -241,7 +243,7 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+	list_insert_ordered (&ready_list, &t->elem, mvp, NULL);
 	t->status = THREAD_READY;
 	intr_set_level (old_level);
 }
@@ -304,7 +306,7 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		list_insert_ordered(&ready_list, &curr->elem, mvp, NULL);
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
@@ -313,6 +315,12 @@ thread_yield (void) {
 void
 thread_set_priority (int new_priority) {
 	thread_current ()->priority = new_priority;
+	
+	if (!list_empty(&ready_list)) {
+		struct thread*t = list_entry(list_begin(&ready_list), struct thread, elem);
+		if (t->priority > new_priority)
+			thread_yield();
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -588,4 +596,12 @@ allocate_tid (void) {
 	lock_release (&tid_lock);
 
 	return tid;
+}
+
+bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+		struct thread *thread_a = list_entry(a, struct thread, elem);
+		struct thread *thread_b = list_entry(b, struct thread, elem);
+
+		return thread_a->priority > thread_b->priority;
 }
