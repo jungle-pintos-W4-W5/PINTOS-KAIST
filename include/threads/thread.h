@@ -126,6 +126,7 @@ struct list sleeping_list; // 전역 변수로 선언
 bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux); // 높은 우선순위 순서 기준 내림차순 정렬 용도
 void yield_if_lower (void); // 우선순위가 낮을 시 조건부로 양보
 void thread_refresh_priority(struct thread *t); /* 현재 donation list 기준으로 현재 쓰레드 우선순위 갱신하는 함수 */
+void pass_on_priority(struct thread *t, int depth);
 
 void thread_init (void);
 void thread_start (void);

@@ -179,7 +179,7 @@ lock_init (struct lock *lock) {
 
 void donate_priority (struct thread* lock_holder, struct thread* current, struct lock* lock) {
 	list_push_back(&lock_holder->donations_recieved, &current->donation);
-	thread_refresh_priority(lock_holder);
+	pass_on_priority(lock_holder, 0);
 }
 
 /* Acquires LOCK, sleeping until it becomes available if

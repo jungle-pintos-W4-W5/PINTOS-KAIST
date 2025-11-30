@@ -325,6 +325,8 @@ thread_set_priority (int new_priority) {
 	yield_if_lower();
 }
 
+/* 현재 donations_recieved 리스트가 있다면 해당 리스트 기준 최고 우선순위로 현재 우선순위 갱신 */
+/* donate-one, multiple 까지는 해결 가능하지만 연속적으로 donation을 물려주지는 못한다 */
 void thread_refresh_priority(struct thread *t) {
 	int max_priority = t->base_priority;
 
@@ -343,6 +345,24 @@ void thread_refresh_priority(struct thread *t) {
 		}
 	}
 	t->priority = max_priority;
+}
+
+/* 다음 lock holder 가 존재한다면 우선순위를 연쇄적으로 물려주는 함수 */
+/* priority-donate-nest, priority-donate-chain위해 필요 */
+void pass_on_priority(struct thread *t, int depth) {
+	if (depth > 8 || t == NULL) return;
+
+	thread_refresh_priority(t);
+
+	struct lock* lock = t->waiting_lock;
+	if (!lock) return;
+
+	struct thread* next = lock->holder;
+	if (!next) return;
+
+	if (t->priority > next->priority) {
+		pass_on_priority(next, depth+1);
+	}
 }
 
 /* Returns the current thread's priority. */
