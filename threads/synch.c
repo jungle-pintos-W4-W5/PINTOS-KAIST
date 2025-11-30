@@ -177,6 +177,11 @@ lock_init (struct lock *lock) {
 	sema_init (&lock->semaphore, 1);
 }
 
+void donate_priority (struct thread* lock_holder, struct thread* current, struct lock* lock) {
+	list_push_back(&lock_holder->donations_recieved, &current->donation);
+	thread_refresh_priority(lock_holder);
+}
+
 /* Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -185,14 +190,32 @@ lock_init (struct lock *lock) {
    interrupt handler.  This function may be called with
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
+
 void
 lock_acquire (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (!intr_context ());
 	ASSERT (!lock_held_by_current_thread (lock));
 
+	enum intr_level old_level = intr_disable();
+
+	struct thread* current = thread_current();
+	struct thread* holder = lock->holder;
+
+	if (holder != NULL) {
+
+		current->waiting_lock = lock;
+
+		if (current->priority > holder->priority) {
+			donate_priority(holder, current, lock);
+		}
+	}
+
+	intr_set_level(old_level);
+
 	sema_down (&lock->semaphore);
-	lock->holder = thread_current ();
+	lock->holder = current;
+	current->waiting_lock = NULL;
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -214,16 +237,45 @@ lock_try_acquire (struct lock *lock) {
 	return success;
 }
 
+/* lock을 해제하는 thread 의 donations_recieved list를 순회하며 */
+/* 현재 lock에 대해 받은 기부 구조체들을 정리하는 헬퍼 함수 */
+void remove_donations (struct thread* lock_holder, struct lock* lock) {
+	struct list *donations = &lock_holder->donations_recieved;
+
+	if (!list_empty(donations)) 
+	{
+		struct list_elem *e = list_front(donations);
+		
+		while (e != list_end(donations)) {
+			struct thread*t = list_entry(e, struct thread, donation);
+			struct list_elem *next = list_next(e);
+
+			if (t->waiting_lock == lock) {
+				list_remove(e);
+			}
+			e = next;
+		}
+	}
+}
+
 /* Releases LOCK, which must be owned by the current thread.
    This is lock_release function.
 
    An interrupt handler cannot acquire a lock, so it does not
    make sense to try to release a lock within an interrupt
    handler. */
+
 void
 lock_release (struct lock *lock) {
 	ASSERT (lock != NULL);
 	ASSERT (lock_held_by_current_thread (lock));
+
+	enum intr_level old_level = intr_disable();
+
+	remove_donations(lock->holder, lock);
+	thread_refresh_priority(lock->holder); // donation list 정리 후에 새로 priority 갱신
+
+	intr_set_level(old_level);
 
 	lock->holder = NULL;
 	sema_up (&lock->semaphore);

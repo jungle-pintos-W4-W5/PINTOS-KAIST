@@ -91,10 +91,16 @@ struct thread {
 	enum thread_status status;          /* Thread state. */
 	char name[16];                      /* Name (for debugging purposes). */
 	int priority;                       /* Priority. */
+	int base_priority;					/* Base priority 저장용 */
 
 	/* Shared between thread.c and synch.c. */
 	struct list_elem elem;              /* List element. */
 	int wake_tick;
+
+	struct list donations_recieved;		/* 받은 Donation 보관용 */
+	struct list_elem donation;			/* Donation 줄 때 넘겨줄 구조체 */
+	struct lock *waiting_lock;			/* 현재 기다리는 락에 대한 포인터 */
+	
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -119,6 +125,7 @@ extern bool thread_mlfqs;
 struct list sleeping_list; // 전역 변수로 선언 
 bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux); // 높은 우선순위 순서 기준 내림차순 정렬 용도
 void yield_if_lower (void); // 우선순위가 낮을 시 조건부로 양보
+void thread_refresh_priority(struct thread *t); /* 현재 donation list 기준으로 현재 쓰레드 우선순위 갱신하는 함수 */
 
 void thread_init (void);
 void thread_start (void);
