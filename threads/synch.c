@@ -291,6 +291,20 @@ cond_wait (struct condition *cond, struct lock *lock) {
 	lock_acquire (lock);
 }
 
+/* condition waiters list 안의 waiters_elem에 대하여 우선순위 기준 내림차순 정렬 헬퍼 함수 */
+bool higher_first (struct list_elem *a, struct list_elem *b, void* aux) {
+	struct semaphore_elem* cond_waiter_a = list_entry(a, struct semaphore_elem, elem);
+	struct semaphore_elem* cond_waiter_b = list_entry(b, struct semaphore_elem, elem);
+
+	struct list *sema_a_waiters = &cond_waiter_a->semaphore.waiters;
+	struct list *sema_b_waiters = &cond_waiter_b->semaphore.waiters;
+
+	struct thread *a_waiter = list_entry(list_front(sema_a_waiters), struct thread, elem);
+	struct thread *b_waiter = list_entry(list_front(sema_b_waiters), struct thread, elem);
+
+	return a_waiter->priority > b_waiter->priority;
+}
+
 /* If any threads are waiting on COND (protected by LOCK), then
    this function signals one of them to wake up from its wait.
    LOCK must be held before calling this function.
@@ -305,9 +319,11 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED) {
 	ASSERT (!intr_context ());
 	ASSERT (lock_held_by_current_thread (lock));
 
-	if (!list_empty (&cond->waiters))
+	if (!list_empty (&cond->waiters)) {
+		list_sort(&cond->waiters, higher_first, NULL);
 		sema_up (&list_entry (list_pop_front (&cond->waiters),
 					struct semaphore_elem, elem)->semaphore);
+	}
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
