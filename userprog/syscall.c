@@ -7,6 +7,7 @@
 #include "userprog/gdt.h"
 #include "threads/flags.h"
 #include "intrinsic.h"
+#include "filesys/filesys.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -16,7 +17,7 @@ static void check_valid_ptr (void *ptr);
 static void halt (void);
 static void exit (int status);
 static int write (int fd, const void *buffer, unsigned size);
-
+static bool create (const char *file, unsigned initial_size);
 
 /* System call.
  *
@@ -49,9 +50,9 @@ void
 syscall_handler (struct intr_frame *f UNUSED) {
 	int syscall_number = f->R.rax;
 
-	int arg1 = f->R.rdi;		// argc
-	void* arg2 = f->R.rsi;		// buffer/string/addr_argv[0]
-	unsigned arg3 = f->R.rdx;	// size/length/count
+	uint64_t arg1 = f->R.rdi;	
+	uint64_t arg2 = f->R.rsi;	
+	uint64_t arg3 = f->R.rdx;	
 
 	switch (syscall_number) {
 		case SYS_EXIT:
@@ -63,6 +64,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_WRITE:
 			f->R.rax = write(arg1, arg2, arg3);
 			break;
+		case SYS_CREATE:
+			f->R.rax = create(arg1, arg2);
+			break;
 		default:
 			thread_exit ();
 	}
@@ -73,9 +77,15 @@ static void exit (int status) {
 	thread_exit();
 }
 
+static bool create (const char *file, unsigned initial_size) {
+	check_valid_ptr(file);
+	bool success = filesys_create(file, initial_size);
+	return success;
+}
+
 static int write (int fd, const void *buffer, unsigned size) {
 	check_valid_ptr(buffer);
-	
+
 	if (fd == 1) {
 		putbuf(buffer, size);
 		return size;
