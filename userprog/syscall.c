@@ -11,6 +11,8 @@
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
+static void check_valid_ptr (void *ptr);
+
 static void halt (void);
 static void exit (int status);
 static int write (int fd, const void *buffer, unsigned size);
@@ -72,8 +74,21 @@ static void exit (int status) {
 }
 
 static int write (int fd, const void *buffer, unsigned size) {
+	check_valid_ptr(buffer);
+	
 	if (fd == 1) {
 		putbuf(buffer, size);
 		return size;
 	}
+}
+
+static void check_valid_ptr (void *ptr) {
+	if (ptr == NULL)	// if invalid ptr
+		exit(-1);
+	
+	if (is_kernel_vaddr(ptr))	// if is not user vaddr
+		exit(-1);
+
+	if (pml4_get_page(thread_current()->pml4, ptr) == NULL)	// if is not mapped
+		exit(-1);
 }
