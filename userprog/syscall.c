@@ -83,11 +83,13 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			close(arg1);
 			break;
 		case SYS_READ:
+			f->R.rax = read(arg1, arg2, arg3);
 			break;
 		case SYS_WRITE:
 			f->R.rax = write(arg1, arg2, arg3);
 			break;
 		case SYS_FILESIZE:
+			f->R.rax = filesize(arg1);
 			break;
 		default:
 			thread_exit ();
@@ -135,7 +137,7 @@ static void close (int fd) {
 	struct thread *cur = thread_current();
 
 	lock_acquire(&filesys_lock);
-	
+
 	struct file_descriptor *real_fd = find_fd(cur, fd);
 	if (real_fd == NULL) 
 		return;
@@ -150,6 +152,26 @@ static void close (int fd) {
 	lock_release(&filesys_lock);
 
 	free(real_fd);
+}
+
+static int filesize (int fd) {
+	check_valid_fd(fd);
+	struct thread *curr = thread_current();
+	struct file_descriptor *real_fd = find_fd(curr, fd);
+	if (real_fd == NULL)
+		return NULL;
+
+	struct file* file = real_fd->fd_file;
+	if (file == NULL) 
+		return NULL;
+
+	int f_size = file_length(file);
+	
+	return f_size;
+}
+
+static int read (int fd, void *buffer, unsigned size) {
+
 }
 
 static int write (int fd, const void *buffer, unsigned size) {
