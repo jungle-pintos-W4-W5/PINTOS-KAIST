@@ -106,6 +106,8 @@ struct thread {
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
 	int exit_status;
+	struct list files_opened;
+
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
@@ -115,6 +117,12 @@ struct thread {
 	/* Owned by thread.c. */
 	struct intr_frame tf;               /* Information for switching */
 	unsigned magic;                     /* Detects stack overflow. */
+};
+
+struct file_descriptor {
+	int fd_val;
+	struct file* fd_file;
+	struct list_elem fd_elem;
 };
 
 struct list sleeping_list;
