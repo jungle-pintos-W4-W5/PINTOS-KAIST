@@ -9,7 +9,7 @@
 #define ROOT_DIR_SECTOR 1       /* Root directory file inode sector. */
 
 #define MIN_FD 3
-#define MAX_FD 30
+#define MAX_FD 300
 
 /* Disk used for file system. */
 extern struct disk *filesys_disk;
