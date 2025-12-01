@@ -11,6 +11,9 @@
 #define MIN_FD 3
 #define MAX_FD 300
 
+
+struct lock filesys_lock;
+
 /* Disk used for file system. */
 extern struct disk *filesys_disk;
 
