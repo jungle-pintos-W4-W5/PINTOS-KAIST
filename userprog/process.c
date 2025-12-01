@@ -18,6 +18,7 @@
 #include "threads/mmu.h"
 #include "threads/vaddr.h"
 #include "intrinsic.h"
+#include "devices/timer.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -26,6 +27,7 @@ static void process_cleanup (void);
 static bool load (const char *file_name, struct intr_frame *if_);
 static void initd (void *f_name);
 static void __do_fork (void *);
+static void parse_name(char* source, char* dest, unsigned max_name_len);
 
 /* General process initializer for initd and other process. */
 static void
@@ -50,8 +52,12 @@ process_create_initd (const char *file_name) {
 		return TID_ERROR;
 	strlcpy (fn_copy, file_name, PGSIZE);
 
+	/* thread_name 의 크기에 맞추어 따로 분리하여 전달 */
+	char thread_name[16];
+	parse_name(thread_name, file_name, sizeof(thread_name)-1);
+
 	/* Create a new thread to execute FILE_NAME. */
-	tid = thread_create (file_name, PRI_DEFAULT, initd, fn_copy);
+	tid = thread_create (thread_name, PRI_DEFAULT, initd, fn_copy);
 	if (tid == TID_ERROR)
 		palloc_free_page (fn_copy);
 	return tid;
@@ -158,6 +164,51 @@ error:
 	thread_exit ();
 }
 
+static void parse_name(char* dest, char* source, unsigned max_name_len) {
+
+	int name_length = strcspn(source, " ");
+
+	if (name_length >= max_name_len)
+		name_length = max_name_len -1;
+
+	memcpy(dest, source, name_length);
+	dest[name_length] = '\0';
+}
+
+void pass_arguments (char *cmd_line, struct intr_frame* _if) {
+	
+	uint8_t *esp = (uint8_t*) _if->rsp;
+	char *saveptr;
+	char *token;
+	int argc = 0;
+	char *argv_addr[63];
+
+	for(token = strtok_r(cmd_line, " ", &saveptr);
+		token != NULL;
+		token = strtok_r(NULL, " ", &saveptr))
+	{
+		int str_len = strlen(token) + 1;	// null terminator 포함 시키기
+		esp -= str_len;					 	// stack push 위해 자리 마련
+		memcpy(esp, token, str_len);	 	// stack push
+		argv_addr[argc++] = (char*) esp;		 	// argc update
+	}
+
+	// esp -= (uintptr_t) esp%8; 	// word align (주소->정수) 캐스팅 필요
+	esp = (uint8_t*)((uintptr_t)esp & ~7);
+	esp -= sizeof(char*); 					// sentinel argv[argc]
+
+	for(int i = argc -1; i >= 0; i--) {
+		esp -= sizeof(char*);			 	// stack에 포인터 크기(8바이트) 자리 마련
+		memcpy(esp, &argv_addr[i], sizeof(char*));		// stack 에 argv[i]주소 push
+	}
+
+	_if->R.rdi = argc;				// arg 개수
+	_if->R.rsi = (uintptr_t) esp; 	// stack pointer to argv_addr[0]
+	
+	esp -= sizeof(char*); 			// fake return address
+	_if->rsp = (uintptr_t) esp;		// rsp 를 스택 상단으로 재조정 
+}
+
 /* Switch the current execution context to the f_name.
  * Returns -1 on fail. */
 int
@@ -176,13 +227,22 @@ process_exec (void *f_name) {
 	/* We first kill the current context */
 	process_cleanup ();
 
+	/* load 할 파일의 의 크기에 맞추어 따로 분리하여 전달 */
+	char load_name[NAME_MAX + 1]; // NAME_MAX (directory.h)
+	parse_name(load_name, f_name, sizeof(load_name));
+
 	/* And then load the binary */
-	success = load (file_name, &_if);
+	success = load (load_name, &_if);
 
 	/* If load failed, quit. */
-	palloc_free_page (file_name);
-	if (!success)
+	if (!success) {
+		palloc_free_page (file_name);
 		return -1;
+	}
+
+	pass_arguments(file_name, &_if);
+
+	palloc_free_page (file_name);
 
 	/* Start switched process. */
 	do_iret (&_if);
@@ -204,6 +264,7 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
+	timer_sleep(10);
 	return -1;
 }
 
@@ -215,7 +276,7 @@ process_exit (void) {
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-
+	printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
 	process_cleanup ();
 }
 

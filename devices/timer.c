@@ -160,13 +160,9 @@ static void check_sleepers(int current_ticks)
 static void
 timer_interrupt (struct intr_frame *args UNUSED) 
 {
-	enum intr_level old_level = intr_disable();
-
 	ticks++;
 	thread_tick ();
 	check_sleepers(ticks);
-
-	intr_set_level (old_level);
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

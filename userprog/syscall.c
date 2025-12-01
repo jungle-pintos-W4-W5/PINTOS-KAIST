@@ -11,6 +11,11 @@
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
+static void halt (void);
+static void exit (int status);
+static int write (int fd, const void *buffer, unsigned size);
+
+
 /* System call.
  *
  * Previously system call services was handled by the interrupt handler
@@ -40,7 +45,35 @@ syscall_init (void) {
 /* The main system call interface */
 void
 syscall_handler (struct intr_frame *f UNUSED) {
-	// TODO: Your implementation goes here.
-	printf ("system call!\n");
-	thread_exit ();
+	int syscall_number = f->R.rax;
+
+	int arg1 = f->R.rdi;		// argc
+	void* arg2 = f->R.rsi;		// buffer/string/addr_argv[0]
+	unsigned arg3 = f->R.rdx;	// size/length/count
+
+	switch (syscall_number) {
+		case SYS_EXIT:
+			exit(arg1);
+			break;
+		case SYS_HALT:
+			power_off();
+			break;
+		case SYS_WRITE:
+			f->R.rax = write(arg1, arg2, arg3);
+			break;
+		default:
+			thread_exit ();
+	}
+}
+
+static void exit (int status) {
+	thread_current()->exit_status = status;
+	thread_exit();
+}
+
+static int write (int fd, const void *buffer, unsigned size) {
+	if (fd == 1) {
+		putbuf(buffer, size);
+		return size;
+	}
 }
