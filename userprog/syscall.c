@@ -8,6 +8,7 @@
 #include "threads/flags.h"
 #include "intrinsic.h"
 #include "filesys/filesys.h"
+#include "threads/synch.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
@@ -17,6 +18,7 @@ static void check_valid_fd (int fd);
 static int allocate_fd(struct thread* t);
 static bool lesser_fd(struct list_elem *a, struct list_elem *b, void *aux);
 static struct file_descriptor* find_fd (struct thread* t, int fd);
+struct lock filesys_lock;
 
 static void halt (void);
 static void exit (int status);
@@ -171,7 +173,28 @@ static int filesize (int fd) {
 }
 
 static int read (int fd, void *buffer, unsigned size) {
+	
+	check_valid_ptr(buffer);
 
+	if (fd == 0) {
+		input_getc();
+		return;
+	}
+
+	check_valid_fd(fd);
+
+	struct file *file = find_fd(thread_current(), fd)->fd_file;
+	if (file == NULL)
+		return -1;
+
+	lock_acquire(&filesys_lock);
+	int bytes_read = file_read(file, buffer, size);
+	lock_release(&filesys_lock);
+
+	if (bytes_read < size)
+		return EOF;
+
+	return bytes_read;
 }
 
 static int write (int fd, const void *buffer, unsigned size) {
@@ -181,6 +204,18 @@ static int write (int fd, const void *buffer, unsigned size) {
 		putbuf(buffer, size);
 		return size;
 	}
+
+	check_valid_fd(fd);
+
+	struct file* file = find_fd(thread_current(), fd)->fd_file;
+	if (file == NULL)
+		return NULL;
+
+	lock_acquire(&filesys_lock);
+	int bytes_written = file_write(file, buffer, size);
+	lock_release(&filesys_lock);
+	
+	return bytes_written;
 }
 
 static void check_valid_ptr (void *ptr) {
