@@ -207,6 +207,7 @@ thread_create (const char *name, int priority,
 
 	/* Add to run queue. */
 	thread_unblock (t);
+	yield_if_lower();
 
 	return tid;
 }
@@ -241,7 +242,7 @@ thread_unblock (struct thread *t) {
 
 	old_level = intr_disable ();
 	ASSERT (t->status == THREAD_BLOCKED);
-	list_push_back (&ready_list, &t->elem);
+	list_insert_ordered (&ready_list, &t->elem, mvp, NULL);
 	t->status = THREAD_READY;
 	intr_set_level (old_level);
 }
@@ -304,7 +305,7 @@ thread_yield (void) {
 
 	old_level = intr_disable ();
 	if (curr != idle_thread)
-		list_push_back (&ready_list, &curr->elem);
+		list_insert_ordered(&ready_list, &curr->elem, mvp, NULL);
 	do_schedule (THREAD_READY);
 	intr_set_level (old_level);
 }
@@ -312,7 +313,56 @@ thread_yield (void) {
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void
 thread_set_priority (int new_priority) {
-	thread_current ()->priority = new_priority;
+	struct thread* current = thread_current();
+
+	enum intr_level old_level = intr_disable();
+
+	current->base_priority = new_priority;
+	thread_refresh_priority(current);
+
+	intr_set_level(old_level);
+	
+	yield_if_lower();
+}
+
+/* 현재 donations_recieved 리스트가 있다면 해당 리스트 기준 최고 우선순위로 현재 우선순위 갱신 */
+/* donate-one, multiple 까지는 해결 가능하지만 연속적으로 donation을 물려주지는 못한다 */
+void thread_refresh_priority(struct thread *t) {
+	int max_priority = t->base_priority;
+
+	if (!list_empty(&t->donations_recieved)) 
+	{
+		struct list_elem *e = list_front(&t->donations_recieved);
+
+		while (e != list_end(&t->donations_recieved)) {
+			struct thread *t = list_entry(e, struct thread, donation);
+			struct thread *next = list_next(e);
+
+			if (t->priority > max_priority) {
+				max_priority = t->priority;
+			}
+			e = next;
+		}
+	}
+	t->priority = max_priority;
+}
+
+/* 다음 lock holder 가 존재한다면 우선순위를 연쇄적으로 물려주는 함수 */
+/* priority-donate-nest, priority-donate-chain위해 필요 */
+void pass_on_priority(struct thread *t, int depth) {
+	if (depth > 8 || t == NULL) return;
+
+	thread_refresh_priority(t);
+
+	struct lock* lock = t->waiting_lock;
+	if (!lock) return;
+
+	struct thread* next = lock->holder;
+	if (!next) return;
+
+	if (t->priority > next->priority) {
+		pass_on_priority(next, depth+1);
+	}
 }
 
 /* Returns the current thread's priority. */
@@ -409,7 +459,10 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
+	t->base_priority = priority;
 	t->magic = THREAD_MAGIC;
+	list_init(&t->donations_recieved);
+	t->waiting_lock = NULL;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -588,4 +641,27 @@ allocate_tid (void) {
 	lock_release (&tid_lock);
 
 	return tid;
+}
+
+/* 더 높은 우선순위의 기준으로 정렬을 할 때 필요한 list_less_func 헬퍼 함수 */
+/* list_insert_ordered(), list_sort, list_max() 등에 쓸 수 있다 */
+bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux)
+{
+		struct thread *thread_a = list_entry(a, struct thread, elem);
+		struct thread *thread_b = list_entry(b, struct thread, elem);
+
+		return thread_a->priority > thread_b->priority;
+}
+
+/* ready_list가 비어있지 않다는 전제 하에 */
+/* 현재 쓰레드가 ready_list 최상단 쓰레드보다 우선순위가 낮다면 양보하는 조건부 함수 */
+void yield_if_lower(void) {
+	if (!list_empty(&ready_list)) {
+
+		struct thread* first_ready = list_entry(list_front(&ready_list), struct thread, elem); 
+		struct thread* current = thread_current();
+
+		if (current->priority < first_ready->priority)
+			thread_yield();
+	}
 }
