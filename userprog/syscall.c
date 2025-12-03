@@ -21,6 +21,7 @@ static void validate_buffer(void *buffer, unsigned size);
 static int allocate_fd(struct thread* t);
 static bool lesser_fd(struct list_elem *a, struct list_elem *b, void *aux);
 static struct file_descriptor* find_fd (struct thread* t, int fd);
+static struct file * get_file_from_fd (int fd); 
 struct lock filesys_lock;
 
 static void sys_halt (void);
@@ -201,13 +202,11 @@ static void sys_close (int fd) {
 static int sys_filesize (int fd) {
 	check_valid_fd(fd);
 	struct thread *curr = thread_current();
-	struct file_descriptor *fd_struct = find_fd(curr, fd);
-	if (fd_struct == NULL)
-		return NULL;
 
-	struct file* file = fd_struct->fd_file;
-	if (file == NULL) 
+	struct file* file = get_file_from_fd(fd);
+	if (file == NULL) {
 		return NULL;
+	}
 
 	lock_acquire(&filesys_lock);
 	int f_size = file_length(file);
@@ -227,13 +226,10 @@ static int sys_read (int fd, void *buffer, unsigned size) {
 
 	check_valid_fd(fd);
 
-	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
-	if (fd_struct == NULL)
+	struct file* file = get_file_from_fd(fd);
+	if (file == NULL) {
 		return -1;
-
-	struct file *file = fd_struct->fd_file;
-	if (file == NULL)
-		return -1;
+	}
 
 	lock_acquire(&filesys_lock);
 	int bytes_read = file_read(file, buffer, size);
@@ -255,13 +251,11 @@ static int sys_write (int fd, const void *buffer, unsigned size) {
 
 	check_valid_fd(fd);
 
-	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
-	if (fd_struct == NULL)
-		return -1;
 
-	struct file *file = fd_struct->fd_file;
-	if (file == NULL)
+	struct file* file = get_file_from_fd(fd);
+	if (file == NULL) {
 		return -1;
+	}
 
 	lock_acquire(&filesys_lock);
 	int bytes_written = file_write(file, buffer, size);
@@ -273,13 +267,10 @@ static int sys_write (int fd, const void *buffer, unsigned size) {
 static void sys_seek (int fd, unsigned position) {
 	check_valid_fd(fd);
 
-	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
-	if (fd_struct == NULL)
+	struct file* file = get_file_from_fd(fd);
+	if (file == NULL) {
 		return -1;
-
-	struct file *file = fd_struct->fd_file;
-	if (file == NULL)
-		return -1;	
+	}
 
 	lock_acquire(&filesys_lock);
 	file_seek(file, position);
@@ -289,13 +280,10 @@ static void sys_seek (int fd, unsigned position) {
 static unsigned sys_tell (int fd) {
 	check_valid_fd(fd);
 
-		struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
-	if (fd_struct == NULL)
+	struct file* file = get_file_from_fd(fd);
+	if (file == NULL) {
 		return -1;
-
-	struct file *file = fd_struct->fd_file;
-	if (file == NULL)
-		return -1;
+	}
 
 	lock_acquire(&filesys_lock);
 	unsigned start = file_tell(file);
@@ -397,4 +385,22 @@ static struct file_descriptor* find_fd (struct thread* t, int fd) {
 	}
 
 	return NULL;
+}
+
+/* fd를 통해 file 객체를 찾아 반환하는 헬퍼 함수 */
+static struct file * get_file_from_fd (int fd) {
+    /* 1. fd 범위 체크 (이미 check_valid_fd가 있다면 생략 가능하지만 안전을 위해) */
+    if (fd < 0 || fd >= MAX_FD) {
+        return NULL;
+    }
+
+    /* 2. fd_table에서 entry 찾기 */
+    struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
+    
+    if (fd_struct == NULL) {
+        return NULL;
+    }
+
+    /* 3. file 객체 반환 (NULL일 수도 있음) */
+    return fd_struct->fd_file;
 }

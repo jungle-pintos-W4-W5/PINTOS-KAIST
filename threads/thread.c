@@ -334,7 +334,7 @@ void thread_refresh_priority(struct thread *t) {
 
 	if (!list_empty(&t->donations_recieved)) 
 	{
-		struct list_elem *e = list_front(&t->donations_recieved);
+		struct list_elem *e = list_begin(&t->donations_recieved);
 
 		while (e != list_end(&t->donations_recieved)) {
 			struct thread *t = list_entry(e, struct thread, donation);
@@ -663,7 +663,7 @@ bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux)
 void yield_if_lower(void) {
 	if (!list_empty(&ready_list)) {
 
-		struct thread* first_ready = list_entry(list_front(&ready_list), struct thread, elem); 
+		struct thread* first_ready = list_entry(list_begin(&ready_list), struct thread, elem); 
 		struct thread* current = thread_current();
 
 		if (current->priority < first_ready->priority)
@@ -673,7 +673,7 @@ void yield_if_lower(void) {
 
 struct thread* find_by_pid (tid_t pid) {
 	struct list_elem *e;
-	for(e = list_front(&all_list); e != list_end(&all_list);) {
+	for(e = list_begin(&all_list); e != list_end(&all_list);) {
 		struct list_elem *next = list_next(e);
 		struct thread *t = list_entry(e, struct thread, id_elem);
 
