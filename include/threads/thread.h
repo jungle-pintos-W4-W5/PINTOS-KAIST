@@ -111,6 +111,7 @@ struct thread {
 	struct list children;
 	struct child* child_info;
 	struct list_elem id_elem;
+	struct file *running_file;
 
 #endif
 #ifdef VM

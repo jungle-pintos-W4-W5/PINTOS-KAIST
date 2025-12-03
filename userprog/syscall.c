@@ -27,6 +27,7 @@ static void sys_halt (void);
 static void sys_exit (int status);
 static int sys_write (int fd, const void *buffer, unsigned size);
 static bool sys_create (const char *file, unsigned initial_size);
+static bool sys_remove (const char *file);
 static int sys_open (const char *file_name);
 static void sys_close (int fd);
 static int sys_filesize (int fd);
@@ -85,6 +86,9 @@ syscall_handler (struct intr_frame *f UNUSED) {
 		case SYS_CREATE:
 			f->R.rax = sys_create(arg1, arg2);
 			break;
+		case SYS_REMOVE:
+			f->R.rax = sys_remove(arg1);
+			break;
 		case SYS_OPEN:
 			f->R.rax = sys_open(arg1);
 			break;
@@ -133,6 +137,15 @@ static bool sys_create (const char *file, unsigned initial_size) {
 
 	lock_acquire(&filesys_lock);
 	bool success = filesys_create(file, initial_size);
+	lock_release(&filesys_lock);
+
+	return success;
+}
+static bool sys_remove (const char *file) {
+	check_valid_ptr(file);
+	
+	lock_acquire(&filesys_lock);
+	bool success = filesys_remove(file);
 	lock_release(&filesys_lock);
 
 	return success;
@@ -205,7 +218,7 @@ static int sys_filesize (int fd) {
 
 static int sys_read (int fd, void *buffer, unsigned size) {
 	
-	check_valid_ptr(buffer);
+	validate_buffer(buffer, size);
 
 	if (fd == 0) {
 		input_getc();
@@ -233,7 +246,7 @@ static int sys_read (int fd, void *buffer, unsigned size) {
 }
 
 static int sys_write (int fd, const void *buffer, unsigned size) {
-	check_valid_ptr(buffer);
+	validate_buffer(buffer, size);
 
 	if (fd == 1) {
 		putbuf(buffer, size);
@@ -334,8 +347,12 @@ static void check_valid_fd (int fd) {
 }
 
 static void validate_buffer(void *buffer, unsigned size) {
-    for (unsigned i = 0; i < size; i++) {
-        check_valid_ptr(buffer + i);
+    uint8_t *addr = buffer;
+    uint8_t *end = addr + size;
+
+    while (addr < end) {
+        check_valid_ptr(addr);
+        addr++;
     }
 }
 
@@ -348,7 +365,7 @@ static int allocate_fd(struct thread* t) {
 		list_sort(files, lesser_fd, NULL); // fd값 낮은 순
 
 		struct list_elem *e;
-		for (e = list_front(files); e != list_end(files);) {
+		for (e = list_begin(files); e != list_end(files);) {
 			struct list_elem *next = list_next(e);
 			struct file_descriptor *curr = list_entry(e, struct file_descriptor, fd_elem);
 
@@ -370,16 +387,13 @@ static bool lesser_fd(struct list_elem *a, struct list_elem *b, void *aux) {
 static struct file_descriptor* find_fd (struct thread* t, int fd) {
 	struct list *files = &t->fd_table;
 
-	if (!list_empty(files)) {
-		struct list_elem *e;
-		for (e = list_front(files); e != list_end(files);) {
-			struct list_elem *next = list_next(e);
-			struct file_descriptor *curr = list_entry(e, struct file_descriptor, fd_elem);
-
-			if (curr->fd_val == fd) 
-				return curr;
-			e = next;
-		}
+	struct list_elem *e;
+	for (e = list_begin(files); e != list_end(files);) {
+		struct list_elem *next = list_next(e);
+		struct file_descriptor *curr = list_entry(e, struct file_descriptor, fd_elem);
+		if (curr->fd_val == fd) 
+			return curr;
+		e = next;
 	}
 
 	return NULL;

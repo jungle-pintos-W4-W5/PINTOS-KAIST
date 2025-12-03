@@ -11,11 +11,16 @@ void process_exit (void);
 void process_activate (struct thread *next);
 
 struct fork_aux {
-    struct thread* parent;
-	struct child* child_info;
+    struct thread *parent;
+	struct child *child_info;
     struct semaphore fork_sema;
 	struct intr_frame parent_if;
     bool fork_success;
+};
+
+struct init_aux {
+    char *fn_copy;
+    struct child *child_info;
 };
 
 #endif /* userprog/process.h */
