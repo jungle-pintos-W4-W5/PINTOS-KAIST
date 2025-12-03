@@ -110,6 +110,7 @@ thread_init (void) {
 	list_init (&ready_list);
 	list_init (&destruction_req);
 	list_init (&sleeping_list);
+	list_init (&all_list);
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -193,6 +194,7 @@ thread_create (const char *name, int priority,
 	/* Initialize thread. */
 	init_thread (t, name, priority);
 	tid = t->tid = allocate_tid ();
+	list_push_back(&all_list, &t->id_elem);
 
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
@@ -465,6 +467,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->waiting_lock = NULL;
 	t->exit_status = -1;
 	list_init(&t->fd_table);
+	list_init(&t->children);
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -666,4 +669,19 @@ void yield_if_lower(void) {
 		if (current->priority < first_ready->priority)
 			thread_yield();
 	}
+}
+
+struct thread* find_by_pid (tid_t pid) {
+	struct list_elem *e;
+	for(e = list_front(&all_list); e != list_end(&all_list);) {
+		struct list_elem *next = list_next(e);
+		struct thread *t = list_entry(e, struct thread, id_elem);
+
+		if (t->tid == pid)
+			return t;
+		
+		e = next;
+
+	}
+	return NULL;
 }

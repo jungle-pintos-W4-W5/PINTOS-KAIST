@@ -10,4 +10,12 @@ int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
 
+struct fork_aux {
+    struct thread* parent;
+	struct child* child_info;
+    struct semaphore fork_sema;
+	struct intr_frame parent_if;
+    bool fork_success;
+};
+
 #endif /* userprog/process.h */

@@ -19,15 +19,36 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #include "devices/timer.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
 
+
 static void process_cleanup (void);
-static bool load (const char *file_name, struct intr_frame *if_);
+static bool load (const char *file_name, struct intr_frame *_if);
 static void initd (void *f_name);
-static void __do_fork (void *);
-static void parse_name(char* source, char* dest, unsigned max_name_len);
+static void __do_fork (struct fork_aux *aux);
+
+void child_init (struct thread* parent, struct child* child) {
+	
+	child->pid = -1;
+	child->exit_status = -1;
+	sema_init(&child->wait_sema, 0);
+	list_push_back(&parent->children, &child->elem);
+}
+
+struct child* find_child(tid_t pid) {
+	struct thread* cur = thread_current();
+	struct list_elem *e; 
+	for (e = list_begin(&cur->children); e != list_end(&cur->children); e = list_next(e)) {
+		struct child *child = list_entry(e, struct child, elem);
+
+		if (child->pid == pid)
+			return child;
+	}
+	return NULL;
+}
 
 /* General process initializer for initd and other process. */
 static void
@@ -58,8 +79,17 @@ process_create_initd (const char *file_name) {
 
 	/* Create a new thread to execute FILE_NAME. */
 	tid = thread_create (thread_name, PRI_DEFAULT, initd, fn_copy);
-	if (tid == TID_ERROR)
+	if (tid == TID_ERROR) {
 		palloc_free_page (fn_copy);
+		return TID_ERROR;
+	}
+	struct thread *parent = thread_current();
+	struct thread *child = find_by_pid(tid);
+	struct child *ci = malloc(sizeof(struct child));
+	child_init(parent, ci);
+	ci->pid = tid;
+	child->child_info = ci;
+
 	return tid;
 }
 
@@ -80,10 +110,46 @@ initd (void *f_name) {
 /* Clones the current process as `name`. Returns the new process's thread id, or
  * TID_ERROR if the thread cannot be created. */
 tid_t
-process_fork (const char *name, struct intr_frame *if_ UNUSED) {
-	/* Clone current thread to new thread.*/
-	return thread_create (name,
-			PRI_DEFAULT, __do_fork, thread_current ());
+process_fork (const char *name,   struct intr_frame *if_) {
+	struct thread* cur = thread_current();
+
+	struct fork_aux *aux = malloc(sizeof(struct fork_aux));
+    if (aux == NULL) return TID_ERROR;
+
+	aux->parent = cur;
+    aux->fork_success = false;
+    sema_init(&aux->fork_sema, 0);
+    aux->parent_if = *if_;
+
+	struct child* ci = malloc(sizeof(struct child));
+	if (ci == NULL)
+		return TID_ERROR;
+	
+	child_init(cur, ci);
+	aux->child_info = ci;
+
+	tid_t pid = thread_create (name, PRI_DEFAULT, __do_fork, aux);
+
+	if (pid == TID_ERROR) {
+		list_remove(&ci->elem);
+		free(ci);
+		free(aux);
+		return TID_ERROR;
+	}
+
+	ci->pid = pid;
+
+	sema_down(&aux->fork_sema);
+
+	if (aux->fork_success == false) {
+		list_remove(&ci->elem);
+		free(ci);
+		free(aux);
+		return TID_ERROR;
+	}
+
+	free(aux);
+	return pid;
 }
 
 #ifndef VM
@@ -98,20 +164,30 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
 	bool writable;
 
 	/* 1. TODO: If the parent_page is kernel page, then return immediately. */
+	if (is_kernel_vaddr(va))
+		return true;
 
 	/* 2. Resolve VA from the parent's page map level 4. */
 	parent_page = pml4_get_page (parent->pml4, va);
-
+	if (parent_page == NULL)
+		return false;
 	/* 3. TODO: Allocate new PAL_USER page for the child and set result to
 	 *    TODO: NEWPAGE. */
+	newpage = palloc_get_page(PAL_USER | PAL_ZERO);
+	if (newpage == NULL)
+		return false;
 
 	/* 4. TODO: Duplicate parent's page to the new page and
 	 *    TODO: check whether parent's page is writable or not (set WRITABLE
 	 *    TODO: according to the result). */
+	memcpy(newpage, parent_page, PGSIZE);
+	writable = is_writable(pte);
 
 	/* 5. Add new page to child's page table at address VA with WRITABLE
 	 *    permission. */
 	if (!pml4_set_page (current->pml4, va, newpage, writable)) {
+		palloc_free_page(newpage);
+		return false;
 		/* 6. TODO: if fail to insert page, do error handling. */
 	}
 	return true;
@@ -123,16 +199,18 @@ duplicate_pte (uint64_t *pte, void *va, void *aux) {
  *       That is, you are required to pass second argument of process_fork to
  *       this function. */
 static void
-__do_fork (void *aux) {
+__do_fork (struct fork_aux *aux) {
 	struct intr_frame if_;
-	struct thread *parent = (struct thread *) aux;
+	struct thread *parent = aux->parent;
 	struct thread *current = thread_current ();
+	current->child_info = aux->child_info;
 	/* TODO: somehow pass the parent_if. (i.e. process_fork()'s if_) */
-	struct intr_frame *parent_if;
+
 	bool succ = true;
 
 	/* 1. Read the cpu context to local stack. */
-	memcpy (&if_, parent_if, sizeof (struct intr_frame));
+	memcpy (&if_, &aux->parent_if, sizeof (struct intr_frame));
+	if_.R.rax = 0;
 
 	/* 2. Duplicate PT */
 	current->pml4 = pml4_create();
@@ -154,17 +232,42 @@ __do_fork (void *aux) {
 	 * TODO:       in include/filesys/file.h. Note that parent should not return
 	 * TODO:       from the fork() until this function successfully duplicates
 	 * TODO:       the resources of parent.*/
+	struct list_elem *e;
+	struct list *fdt = &parent->fd_table;
+	for(e = list_begin(fdt); e != list_end(fdt); e = list_next(e)) {
+
+		struct file_descriptor *fd = list_entry(e, struct file_descriptor, fd_elem);
+		if (fd == NULL) {
+			goto error;
+		}
+
+		struct file* file = fd->fd_file;
+		if (file == NULL) {
+			goto error;
+		}
+
+		struct file_descriptor *child_fd = malloc(sizeof(struct file_descriptor));
+		child_fd->fd_val = fd->fd_val;
+		child_fd->fd_file = file_duplicate(file);
+		list_push_back(&current->fd_table, &child_fd->fd_elem);
+	}
 
 	process_init ();
 
 	/* Finally, switch to the newly created process. */
-	if (succ)
+	if (succ) {
+		aux->fork_success = true;
+		sema_up(&aux->fork_sema);
 		do_iret (&if_);
+	}
 error:
+	aux->child_info->exit_status = TID_ERROR;
+	aux->fork_success = false;
+	sema_up(&aux->fork_sema);
 	thread_exit ();
 }
 
-static void parse_name(char* dest, char* source, unsigned max_name_len) {
+void parse_name(char* dest, char* source, unsigned max_name_len) {
 
 	int name_length = strcspn(source, " ");
 
@@ -215,7 +318,6 @@ int
 process_exec (void *f_name) {
 	char *file_name = f_name;
 	bool success;
-
 	/* We cannot use the intr_frame in the thread structure.
 	 * This is because when current thread rescheduled,
 	 * it stores the execution information to the member. */
@@ -223,14 +325,11 @@ process_exec (void *f_name) {
 	_if.ds = _if.es = _if.ss = SEL_UDSEG;
 	_if.cs = SEL_UCSEG;
 	_if.eflags = FLAG_IF | FLAG_MBS;
-
 	/* We first kill the current context */
 	process_cleanup ();
-
 	/* load 할 파일의 의 크기에 맞추어 따로 분리하여 전달 */
 	char load_name[NAME_MAX + 1]; // NAME_MAX (directory.h)
 	parse_name(load_name, f_name, sizeof(load_name));
-
 	/* And then load the binary */
 	success = load (load_name, &_if);
 
@@ -239,7 +338,6 @@ process_exec (void *f_name) {
 		palloc_free_page (file_name);
 		return -1;
 	}
-
 	pass_arguments(file_name, &_if);
 
 	palloc_free_page (file_name);
@@ -264,19 +362,40 @@ process_wait (tid_t child_tid UNUSED) {
 	/* XXX: Hint) The pintos exit if process_wait (initd), we recommend you
 	 * XXX:       to add infinite loop here before
 	 * XXX:       implementing the process_wait. */
-	timer_sleep(10);
-	return -1;
+	struct child *child = find_child(child_tid);
+	if (child == NULL)
+		return TID_ERROR;
+
+	sema_down(&child->wait_sema);
+
+	int status = child->exit_status;
+
+	list_remove(&child->elem);
+	free(child);
+
+	return status;
 }
 
 /* Exit the process. This function is called by thread_exit (). */
 void
 process_exit (void) {
 	struct thread *curr = thread_current ();
+	struct child* child = curr->child_info;
+
 	/* TODO: Your code goes here.
 	 * TODO: Implement process termination message (see
 	 * TODO: project2/process_termination.html).
 	 * TODO: We recommend you to implement process resource cleanup here. */
-	printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
+	 
+	if(curr->pml4 != NULL)
+		printf ("%s: exit(%d)\n", curr->name, curr->exit_status);
+		
+	if (child != NULL) {
+		child->exit_status = curr->exit_status;
+		sema_up(&child->wait_sema);
+		curr->child_info = NULL;
+	}
+
 	process_cleanup ();
 }
 

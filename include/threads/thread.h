@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
+#include "threads/synch.h"
 #ifdef VM
 #include "vm/vm.h"
 #endif
@@ -107,6 +108,9 @@ struct thread {
 	uint64_t *pml4;                     /* Page map level 4 */
 	int exit_status;
 	struct list fd_table;
+	struct list children;
+	struct child* child_info;
+	struct list_elem id_elem;
 
 #endif
 #ifdef VM
@@ -119,23 +123,30 @@ struct thread {
 	unsigned magic;                     /* Detects stack overflow. */
 };
 
+struct child {
+	tid_t pid;
+	struct list_elem elem;
+	int exit_status;
+	struct semaphore wait_sema;
+};
+
 struct file_descriptor {
 	int fd_val;
 	struct file* fd_file;
 	struct list_elem fd_elem;
 };
 
-struct list sleeping_list;
-
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
 struct list sleeping_list; // 전역 변수로 선언 
+struct list all_list;
 bool mvp (const struct list_elem *a, const struct list_elem *b, void *aux); // 높은 우선순위 순서 기준 내림차순 정렬 용도
 void yield_if_lower (void); // 우선순위가 낮을 시 조건부로 양보
 void thread_refresh_priority(struct thread *t); /* 현재 donation list 기준으로 현재 쓰레드 우선순위 갱신하는 함수 */
 void pass_on_priority(struct thread *t, int depth);
+struct thread* find_by_pid (tid_t pid);
 
 void thread_init (void);
 void thread_start (void);

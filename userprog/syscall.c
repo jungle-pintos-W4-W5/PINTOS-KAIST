@@ -9,27 +9,32 @@
 #include "intrinsic.h"
 #include "filesys/filesys.h"
 #include "threads/synch.h"
+#include "userprog/process.h"
+#include "threads/palloc.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
 static void check_valid_ptr (void *ptr);
 static void check_valid_fd (int fd);
+static void validate_buffer(void *buffer, unsigned size);
 static int allocate_fd(struct thread* t);
 static bool lesser_fd(struct list_elem *a, struct list_elem *b, void *aux);
 static struct file_descriptor* find_fd (struct thread* t, int fd);
 struct lock filesys_lock;
 
-static void halt (void);
-static void exit (int status);
-static int write (int fd, const void *buffer, unsigned size);
-static bool create (const char *file, unsigned initial_size);
-static int open (const char *file_name);
-static void close (int fd);
-static int filesize (int fd);
-static int read (int fd, void *buffer, unsigned size);
-static int write (int fd, const void *buffer, unsigned size);
-
+static void sys_halt (void);
+static void sys_exit (int status);
+static int sys_write (int fd, const void *buffer, unsigned size);
+static bool sys_create (const char *file, unsigned initial_size);
+static int sys_open (const char *file_name);
+static void sys_close (int fd);
+static int sys_filesize (int fd);
+static int sys_read (int fd, void *buffer, unsigned size);
+static int sys_write (int fd, const void *buffer, unsigned size);
+static int sys_fork (const char *thread_name, struct intr_frame *_if);
+static int sys_exec (const char *file);
+static int sys_wait (tid_t pid);
 
 /* System call.
  *
@@ -70,40 +75,52 @@ syscall_handler (struct intr_frame *f UNUSED) {
 
 	switch (syscall_number) {
 		case SYS_EXIT:
-			exit(arg1);
+			sys_exit(arg1);
 			break;
 		case SYS_HALT:
-			power_off();
+			sys_halt();
 			break;
 		case SYS_CREATE:
-			f->R.rax = create(arg1, arg2);
+			f->R.rax = sys_create(arg1, arg2);
 			break;
 		case SYS_OPEN:
-			f->R.rax = open(arg1);
+			f->R.rax = sys_open(arg1);
 			break;
 		case SYS_CLOSE:
-			close(arg1);
+			sys_close(arg1);
 			break;
 		case SYS_READ:
-			f->R.rax = read(arg1, arg2, arg3);
+			f->R.rax = sys_read(arg1, arg2, arg3);
 			break;
 		case SYS_WRITE:
-			f->R.rax = write(arg1, arg2, arg3);
+			f->R.rax = sys_write(arg1, arg2, arg3);
 			break;
 		case SYS_FILESIZE:
-			f->R.rax = filesize(arg1);
+			f->R.rax = sys_filesize(arg1);
+			break;
+		case SYS_FORK:
+			f->R.rax = sys_fork(arg1, f);
+			break;
+		case SYS_EXEC:
+			sys_exec(arg1);
+			break;
+		case SYS_WAIT:
+			f->R.rax = sys_wait(arg1);
 			break;
 		default:
 			thread_exit ();
 	}
 }
+static void sys_halt(void) {
+	power_off();
+}
 
-static void exit (int status) {
+static void sys_exit (int status) {
 	thread_current()->exit_status = status;
 	thread_exit();
 }
 
-static bool create (const char *file, unsigned initial_size) {
+static bool sys_create (const char *file, unsigned initial_size) {
 	check_valid_ptr(file);
 
 	lock_acquire(&filesys_lock);
@@ -113,14 +130,16 @@ static bool create (const char *file, unsigned initial_size) {
 	return success;
 }
 
-static int open (const char *file_name) {
+static int sys_open (const char *file_name) {
 	check_valid_ptr(file_name);
 	
 	lock_acquire(&filesys_lock);
 
 	struct file* file = filesys_open(file_name);
-	if (file == NULL) 
+	if (file == NULL) {
+		lock_release(&filesys_lock);
 		return -1;
+	}
 	lock_release(&filesys_lock);
 
 	struct thread* curr = thread_current();
@@ -133,46 +152,50 @@ static int open (const char *file_name) {
 	return fd->fd_val;
 }
 
-static void close (int fd) {
+static void sys_close (int fd) {
 	check_valid_fd(fd);
 
 	struct thread *cur = thread_current();
 
 	lock_acquire(&filesys_lock);
 
-	struct file_descriptor *real_fd = find_fd(cur, fd);
-	if (real_fd == NULL) 
+	struct file_descriptor *fd_struct = find_fd(cur, fd);
+	if (fd_struct == NULL) {
+		lock_release(&filesys_lock);
 		return;
-	
-	struct file* file = real_fd->fd_file;
-	if (file == NULL) 
+	}
+	struct file* file = fd_struct->fd_file;
+	if (file == NULL) {
+		lock_release(&filesys_lock);
 		return;
-
-	list_remove(&real_fd->fd_elem);
+	}
+	list_remove(&fd_struct->fd_elem);
 
 	file_close(file);
 	lock_release(&filesys_lock);
 
-	free(real_fd);
+	free(fd_struct);
 }
 
-static int filesize (int fd) {
+static int sys_filesize (int fd) {
 	check_valid_fd(fd);
 	struct thread *curr = thread_current();
-	struct file_descriptor *real_fd = find_fd(curr, fd);
-	if (real_fd == NULL)
+	struct file_descriptor *fd_struct = find_fd(curr, fd);
+	if (fd_struct == NULL)
 		return NULL;
 
-	struct file* file = real_fd->fd_file;
+	struct file* file = fd_struct->fd_file;
 	if (file == NULL) 
 		return NULL;
 
+	lock_acquire(&filesys_lock);
 	int f_size = file_length(file);
-	
+	lock_release(&filesys_lock);
+
 	return f_size;
 }
 
-static int read (int fd, void *buffer, unsigned size) {
+static int sys_read (int fd, void *buffer, unsigned size) {
 	
 	check_valid_ptr(buffer);
 
@@ -183,7 +206,11 @@ static int read (int fd, void *buffer, unsigned size) {
 
 	check_valid_fd(fd);
 
-	struct file *file = find_fd(thread_current(), fd)->fd_file;
+	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
+	if (fd_struct == NULL)
+		return -1;
+
+	struct file *file = fd_struct->fd_file;
 	if (file == NULL)
 		return -1;
 
@@ -197,7 +224,7 @@ static int read (int fd, void *buffer, unsigned size) {
 	return bytes_read;
 }
 
-static int write (int fd, const void *buffer, unsigned size) {
+static int sys_write (int fd, const void *buffer, unsigned size) {
 	check_valid_ptr(buffer);
 
 	if (fd == 1) {
@@ -207,9 +234,13 @@ static int write (int fd, const void *buffer, unsigned size) {
 
 	check_valid_fd(fd);
 
-	struct file* file = find_fd(thread_current(), fd)->fd_file;
+	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
+	if (fd_struct == NULL)
+		return -1;
+
+	struct file *file = fd_struct->fd_file;
 	if (file == NULL)
-		return NULL;
+		return -1;
 
 	lock_acquire(&filesys_lock);
 	int bytes_written = file_write(file, buffer, size);
@@ -218,22 +249,53 @@ static int write (int fd, const void *buffer, unsigned size) {
 	return bytes_written;
 }
 
+static tid_t sys_fork (const char *thread_name, struct intr_frame *f) {
+    check_valid_ptr(thread_name);
+
+    return process_fork(thread_name, f);
+}
+
+static int sys_exec (const char *file) {
+	check_valid_ptr(file);
+	char *f_cpy = palloc_get_page(0);
+	if (f_cpy == NULL)
+		sys_exit(-1);
+	strlcpy(f_cpy, file, PGSIZE);
+
+	if (process_exec(f_cpy) == -1)
+		sys_exit(-1);
+
+	NOT_REACHED();  // exec 성공하면 원래 프로세스는 돌아오지 않음
+}
+
+static int sys_wait (tid_t pid) {
+	int status = process_wait(pid);
+	return status;
+}
+
+
+/* ########### HELPER FUNCTIONS ############## */
 static void check_valid_ptr (void *ptr) {
 	if (ptr == NULL)	// if invalid ptr
-		exit(-1);
+		sys_exit(-1);
 	
 	if (is_kernel_vaddr(ptr))	// if is not user vaddr
-		exit(-1);
+		sys_exit(-1);
 
 	if (pml4_get_page(thread_current()->pml4, ptr) == NULL)	// if is not mapped
-		exit(-1);
+		sys_exit(-1);
 }
 
 static void check_valid_fd (int fd) {
 	if (fd < MIN_FD || fd > MAX_FD)
-		exit(-1);
+		sys_exit(-1);
 }
-/* ########### HELPER FUNCTIONS ############## */
+
+static void validate_buffer(void *buffer, unsigned size) {
+    for (unsigned i = 0; i < size; i++) {
+        check_valid_ptr(buffer + i);
+    }
+}
 
 // returns available fd
 static int allocate_fd(struct thread* t) {
