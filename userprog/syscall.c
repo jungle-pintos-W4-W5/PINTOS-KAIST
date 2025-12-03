@@ -32,6 +32,8 @@ static void sys_close (int fd);
 static int sys_filesize (int fd);
 static int sys_read (int fd, void *buffer, unsigned size);
 static int sys_write (int fd, const void *buffer, unsigned size);
+static void sys_seek (int fd, unsigned position);
+static unsigned sys_tell (int fd);
 static int sys_fork (const char *thread_name, struct intr_frame *_if);
 static int sys_exec (const char *file);
 static int sys_wait (tid_t pid);
@@ -94,6 +96,12 @@ syscall_handler (struct intr_frame *f UNUSED) {
 			break;
 		case SYS_WRITE:
 			f->R.rax = sys_write(arg1, arg2, arg3);
+			break;
+		case SYS_SEEK:
+			sys_seek (arg1, arg2);
+			break;
+		case SYS_TELL:
+			f->R.rax = sys_tell(arg1);
 			break;
 		case SYS_FILESIZE:
 			f->R.rax = sys_filesize(arg1);
@@ -247,6 +255,40 @@ static int sys_write (int fd, const void *buffer, unsigned size) {
 	lock_release(&filesys_lock);
 	
 	return bytes_written;
+}
+
+static void sys_seek (int fd, unsigned position) {
+	check_valid_fd(fd);
+
+	struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
+	if (fd_struct == NULL)
+		return -1;
+
+	struct file *file = fd_struct->fd_file;
+	if (file == NULL)
+		return -1;	
+
+	lock_acquire(&filesys_lock);
+	file_seek(file, position);
+	lock_release(&filesys_lock);
+}
+
+static unsigned sys_tell (int fd) {
+	check_valid_fd(fd);
+
+		struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
+	if (fd_struct == NULL)
+		return -1;
+
+	struct file *file = fd_struct->fd_file;
+	if (file == NULL)
+		return -1;
+
+	lock_acquire(&filesys_lock);
+	unsigned start = file_tell(file);
+	lock_release(&filesys_lock);
+
+	return start;
 }
 
 static tid_t sys_fork (const char *thread_name, struct intr_frame *f) {
