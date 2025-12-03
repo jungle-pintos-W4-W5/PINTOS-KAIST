@@ -395,6 +395,7 @@ process_exit (void) {
 		sema_up(&child->wait_sema);
 		curr->child_info = NULL;
 	}
+	list_remove(&curr->id_elem);
 
 	process_cleanup ();
 }
