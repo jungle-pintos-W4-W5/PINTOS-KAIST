@@ -2,6 +2,7 @@
 #define THREADS_THREAD_H
 
 #include <debug.h>
+#include "include/threads/synch.h"
 #include <list.h>
 #include <stdint.h>
 #include "threads/interrupt.h"
@@ -85,6 +86,14 @@ typedef int tid_t;
  * only because they are mutually exclusive: only a thread in the
  * ready state is on the run queue, whereas only a thread in the
  * blocked state is on a semaphore wait list. */
+struct lock syslock;
+
+ struct fd_{
+    int fd;
+    struct list_elem elem;
+    struct file* file;
+ };
+
 struct thread {
 	/* Owned by thread.c. */
 	tid_t tid;                          /* Thread identifier. */
@@ -105,10 +114,14 @@ struct thread {
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
 	uint64_t *pml4;                     /* Page map level 4 */
+    int exit_status;    /* 종료 상태 값 저장용*/
+    struct list fd_table; 
+
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+
 #endif
 
 	/* Owned by thread.c. */
@@ -116,7 +129,6 @@ struct thread {
 	unsigned magic;                     /* Detects stack overflow. */
 };
 
-struct list sleeping_list;
 
 /* If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.

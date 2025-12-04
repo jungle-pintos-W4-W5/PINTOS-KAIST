@@ -3,6 +3,8 @@
 
 #include "threads/thread.h"
 
+void set_argument_stack(struct intr_frame* if_, int argc, char** argv);
+bool parse_argument(char* fn_copy, int* argc, char** argv);
 tid_t process_create_initd (const char *file_name);
 tid_t process_fork (const char *name, struct intr_frame *if_);
 int process_exec (void *f_name);

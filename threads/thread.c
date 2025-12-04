@@ -110,6 +110,7 @@ thread_init (void) {
 	list_init (&ready_list);
 	list_init (&destruction_req);
 	list_init (&sleeping_list);
+    
 
 	/* Set up a thread structure for the running thread. */
 	initial_thread = running_thread ();
@@ -462,6 +463,7 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->base_priority = priority;
 	t->magic = THREAD_MAGIC;
 	list_init(&t->donations_recieved);
+    list_init(&t->fd_table);
 	t->waiting_lock = NULL;
 }
 
