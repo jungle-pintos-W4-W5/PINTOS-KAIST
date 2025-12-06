@@ -140,7 +140,8 @@ page_fault (struct intr_frame *f) {
 	write = (f->error_code & PF_W) != 0;
 	user = (f->error_code & PF_U) != 0;
 
-	if (user || is_user_vaddr(fault_addr)) {
+	// 유저 모드인데 커널 주소 접근 시도 (추후에 vm_try_handle_fault로 옮기는게 나을수도)
+	if (user && !is_user_vaddr(fault_addr)) {
         thread_exit();
     }
 

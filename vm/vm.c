@@ -3,6 +3,7 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include <hash.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
  * intialize codes. */
@@ -47,9 +48,9 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
-
+	struct page *p = spt_find_page(spt, upage);
 	/* Check wheter the upage is already occupied or not. */
-	if (spt_find_page (spt, upage) == NULL) {
+	if (p == NULL) {
 		/* TODO: Create the page, fetch the initialier according to the VM type,
 		 * TODO: and then create "uninit" page struct by calling uninit_new. You
 		 * TODO: should modify the field after calling the uninit_new. */
@@ -62,10 +63,20 @@ err:
 
 /* Find VA from spt and return page. On error, return NULL. */
 struct page *
-spt_find_page (struct supplemental_page_table *spt UNUSED, void *va UNUSED) {
-	struct page *page = NULL;
-	/* TODO: Fill this function. */
+spt_find_page (struct supplemental_page_table *spt, void *va) {
+	struct page *page;
 
+	struct page dummy;
+	dummy.va = va;
+
+	struct hash_elem *dummy_h = hash_find(&spt->pages, &dummy.hash_elem);
+	if (dummy_h == NULL)
+		return NULL;
+
+	page = hash_entry(dummy_h, struct page, hash_elem);
+	if (page == NULL)
+		return NULL;
+	
 	return page;
 }
 
@@ -130,13 +141,40 @@ vm_handle_wp (struct page *page UNUSED) {
 
 /* Return true on success */
 bool
-vm_try_handle_fault (struct intr_frame *f UNUSED, void *addr UNUSED,
-		bool user UNUSED, bool write UNUSED, bool not_present UNUSED) {
-	struct supplemental_page_table *spt UNUSED = &thread_current ()->spt;
-	struct page *page = NULL;
+vm_try_handle_fault (struct intr_frame *f, void *addr,
+		bool user, bool write, bool not_present) {
+	struct supplemental_page_table *spt = &thread_current ()->spt;
+	struct page *page;
+
 	/* TODO: Validate the fault */
 	/* TODO: Your code goes here */
 
+	// 어떤 페이지 폴트가 발생하였느지에 따라 대응이 달라야 한다.
+	// 일단  not_present인 경우에만 vm_do_claim_page를 해야하지 않을까 싶다.
+	// intr_frame은 어떻게 활용해야 할까?
+	if (not_present) { // protection fault
+		return false;
+	}
+	
+	page = spt_find_page(spt, addr);
+	if (page == NULL) {
+		return false;
+	}
+
+	if (user) {
+		if (write) {
+
+		}
+
+	} else if (!user)
+	{
+		if (write) {
+
+		}		/* code */
+	}
+	
+
+	// 이렇게 페이지만 설정해주고 나머지는 vm_do_claim_page에서 진행?
 	return vm_do_claim_page (page);
 }
 
@@ -171,9 +209,22 @@ vm_do_claim_page (struct page *page) {
 	return swap_in (page, frame->kva);
 }
 
+uint64_t page_hash (const struct hash_elem *e, void *aux) {
+	struct page* p = hash_entry(e, struct page, hash_elem);
+	uint64_t hash = hash_bytes(&p->va,sizeof(void*));
+	return hash;
+}
+
+bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+	struct page* p_a = hash_entry(a, struct page, hash_elem);
+	struct page* p_b = hash_entry(b, struct page, hash_elem);
+	return p_a->va < p_b->va;
+}
+
 /* Initialize new supplemental page table */
 void
 supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+	hash_init(&spt->pages, page_hash, va_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */

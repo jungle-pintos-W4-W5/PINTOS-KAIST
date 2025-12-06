@@ -12,8 +12,8 @@
 #include "threads/vaddr.h"
 #include "intrinsic.h"
 #ifdef USERPROG
-#include "userprog/process.h"
 #endif
+#include "userprog/process.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -461,13 +461,20 @@ init_thread (struct thread *t, const char *name, int priority) {
 	strlcpy (t->name, name, sizeof t->name);
 	t->tf.rsp = (uint64_t) t + PGSIZE - sizeof (void *);
 	t->priority = priority;
-	t->base_priority = priority;
 	t->magic = THREAD_MAGIC;
+#ifdef USERPROG	
+	t->base_priority = priority;
 	list_init(&t->donations_recieved);
 	t->waiting_lock = NULL;
 	t->exit_status = -1;
 	list_init(&t->fd_table);
 	list_init(&t->children);
+#endif
+
+#ifdef VM
+	supplemental_page_table_init(&t->spt);
+#endif
+	
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
