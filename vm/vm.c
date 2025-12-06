@@ -82,16 +82,23 @@ spt_find_page (struct supplemental_page_table *spt, void *va) {
 
 /* Insert PAGE into spt with validation. */
 bool
-spt_insert_page (struct supplemental_page_table *spt UNUSED,
-		struct page *page UNUSED) {
+spt_insert_page (struct supplemental_page_table *spt,
+		struct page *page) {
 	int succ = false;
-	/* TODO: Fill this function. */
+	
+	struct hash_elem *try = hash_insert(&spt->pages, &page->hash_elem);
+	//hash_insert() 은 hash 안에 동일한 elem이 없을 시에 추가한 후 NULL 값을 반환한다.
+	if (try == NULL)
+		succ = true;
 
 	return succ;
 }
 
 void
 spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
+	struct hash_elem *try = hash_delete(&spt->pages, &page->hash_elem);
+	if (try == NULL)
+		return false;
 	vm_dealloc_page (page);
 	return true;
 }
