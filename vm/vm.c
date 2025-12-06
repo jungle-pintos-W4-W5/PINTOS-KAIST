@@ -100,7 +100,7 @@ spt_remove_page (struct supplemental_page_table *spt, struct page *page) {
 	if (e != NULL) {
 		vm_dealloc_page (page);
 	}
-	
+
 	return;
 }
 
@@ -129,11 +129,21 @@ vm_evict_frame (void) {
  * space.*/
 static struct frame *
 vm_get_frame (void) {
-	struct frame *frame = NULL;
-	/* TODO: Fill this function. */
+	struct frame *frame = malloc(sizeof(struct frame));
+	if (frame == NULL)
+		return NULL;
+
+	void *kva = palloc_get_page(PAL_USER);
+	if (kva == NULL) {
+		free (kva);
+		PANIC("todo"); // todo: eviction algorithm
+	}
+
+	frame->kva = kva;
+	frame->page = NULL;
 
 	ASSERT (frame != NULL);
-	ASSERT (frame->page == NULL);
+	ASSERT (frame->page != NULL);
 	return frame;
 }
 
@@ -154,35 +164,25 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	struct supplemental_page_table *spt = &thread_current ()->spt;
 	struct page *page;
 
-	/* TODO: Validate the fault */
-	/* TODO: Your code goes here */
-
-	// 어떤 페이지 폴트가 발생하였느지에 따라 대응이 달라야 한다.
-	// 일단  not_present인 경우에만 vm_do_claim_page를 해야하지 않을까 싶다.
-	// intr_frame은 어떻게 활용해야 할까?
-	if (not_present) { // protection fault
-		return false;
-	}
+	/* First thing do do..? Validate the fault 
+	==> user / kernel access?
+	if (user && not_present) return false
+	if (user && !not_present) 
+	if (kernel && not_present)
+	if (kernel && !not_present)
+	*/
 	
-	page = spt_find_page(spt, addr);
-	if (page == NULL) {
-		return false;
-	}
-
-	if (user) {
-		if (write) {
-
-		}
-
-	} else if (!user)
-	{
-		if (write) {
-
-		}		/* code */
-	}
+	/*
+	1. not_present 1 : not-present page (not in RAM)
+		- check valid addr (what are standards)
+			- 
+	2. not_present 0 : access right violation (writing r/o page)
+		- vm_handle_wp() - shouldn't it just return false? cuz it shouldn't happen?
+		- any other cases than 'writing r/o page?'
 	
+	*/
 
-	// 이렇게 페이지만 설정해주고 나머지는 vm_do_claim_page에서 진행?
+
 	return vm_do_claim_page (page);
 }
 
@@ -196,9 +196,14 @@ vm_dealloc_page (struct page *page) {
 
 /* Claim the page that allocate on VA. */
 bool
-vm_claim_page (void *va UNUSED) {
-	struct page *page = NULL;
+vm_claim_page (void *va) {
+	struct page *page;
 	/* TODO: Fill this function */
+	void *page_start = pg_round_down(va);
+	page = spt_find_page(&thread_current()->spt, page_start);
+	if (page == NULL) {
+		return false;
+	}
 
 	return vm_do_claim_page (page);
 }
@@ -213,6 +218,11 @@ vm_do_claim_page (struct page *page) {
 	page->frame = frame;
 
 	/* TODO: Insert page table entry to map page's VA to frame's PA. */
+	bool succ = pml4_set_page(thread_current()->pml4, page->va, frame->kva, page->writable);
+	if (!succ) {
+		free(frame);
+		return false;
+	}
 
 	return swap_in (page, frame->kva);
 }
