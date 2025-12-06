@@ -37,6 +37,8 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
+uint64_t page_hash (const struct hash_elem *e, void *aux);
+bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -48,18 +50,38 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
 
 	struct supplemental_page_table *spt = &thread_current ()->spt;
-	struct page *p = spt_find_page(spt, upage);
+
 	/* Check wheter the upage is already occupied or not. */
-	if (p == NULL) {
-		/* TODO: Create the page, fetch the initialier according to the VM type,
-		 * TODO: and then create "uninit" page struct by calling uninit_new. You
-		 * TODO: should modify the field after calling the uninit_new. */
+	/* TODO: Create the page, fetch the initializer according to the VM type, */
+	/* TODO: and then create "uninit" page struct by calling uninit_new. */
+	if (spt_find_page (spt, upage) == NULL) {
+
+		struct page *p = malloc(sizeof(struct page));
+
+		switch (VM_TYPE(type)) {
+			case VM_ANON:
+				uninit_new(p, upage, init, type, aux, anon_initializer);
+				break;
+			case VM_FILE:
+				uninit_new(p, upage, init, type, aux, file_backed_initializer);
+				break;
+			default:
+				break;
+		}
+		
+		/* TODO: You should modify the field after calling the uninit_new. */
+		p->writable = writable;
 
 		/* TODO: Insert the page into the spt. */
+		if (!vm_claim_page(upage))
+			goto err;
+		if (!spt_insert_page(&spt->pages, &p->hash_elem)) 
+			goto err;
 	}
 err:
 	return false;
 }
+
 
 /* Find VA from spt and return page. On error, return NULL. */
 struct page *
