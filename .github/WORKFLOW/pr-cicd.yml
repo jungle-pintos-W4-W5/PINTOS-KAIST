@@ -49,7 +49,7 @@ jobs:
         run: |
           set +e
           
-          projects=(threads)
+          projects=(userprog)
           
           echo "## 🚀 Pintos CI Report" > test-summary.md
           echo "" >> test-summary.md
