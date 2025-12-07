@@ -5,6 +5,9 @@
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+#include "userprog/syscall.h" // filesys_lock을 알기 위해
+#include "threads/synch.h"    // lock_acquire/release를 알기 위해
+#include "filesys/file.h"     // file_close를 알기 위해
 #include <hash.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -75,9 +78,10 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		/* TODO: You should modify the field after calling the uninit_new. */
 		p->writable = writable;
 
-		if (!spt_insert_page(&spt->pages, p)) 
+		if (!spt_insert_page(spt, p)) {
+			free(p);
 			goto err;
-
+		}
 		return true;
 	}
 err:
@@ -268,68 +272,89 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 /* Copy supplemental page table from src to dst */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,
-		struct supplemental_page_table *src) {
-	// Iterate through each page in the src's supplemental page table 
-	struct hash_iterator i;
-	hash_first (&i, &src->pages);
-   	while (hash_next (&i))
-	{
-		struct page *parent_page = hash_entry (hash_cur (&i), struct page, hash_elem);
-		enum vm_type type = parent_page->operations->type;
-		void *child_page = parent_page->va;
-		bool writable = parent_page->writable;
+        struct supplemental_page_table *src) {
+    // Iterate through each page in the src's supplemental page table 
+    struct hash_iterator i;
+    hash_first (&i, &src->pages);
+    while (hash_next (&i))
+    {
+        struct page *parent_page = hash_entry (hash_cur (&i), struct page, hash_elem);
+        enum vm_type type = parent_page->operations->type;
+        void *child_page = parent_page->va;
+        bool writable = parent_page->writable;
 
-		// only set initailizer for uninit pages for lazy loading
-		if (type == VM_UNINIT) {
-			vm_initializer *init = parent_page->uninit.init;
-			enum vm_type ref_type = parent_page->uninit.type;
-			struct lazy_aux *parent_aux = parent_page->uninit.aux;
-			
-			// need to copy aux of parent page
-			// but aux only exists if type is VM_FILE
-			if (ref_type & VM_FILE) {
-				
-				struct lazy_aux *child_aux = malloc(sizeof(struct lazy_aux));
-				if (child_aux == NULL)
-					return false;
+        // 1. UNINIT 페이지 처리 (이 부분은 잘 작성하셨습니다)
+        if (type == VM_UNINIT) {
+            vm_initializer *init = parent_page->uninit.init;
+            enum vm_type ref_type = parent_page->uninit.type;
+            struct lazy_aux *parent_aux = parent_page->uninit.aux;
+            
+            if (ref_type & VM_FILE) {
+                struct lazy_aux *child_aux = malloc(sizeof(struct lazy_aux));
+                if (child_aux == NULL)
+                    return false;
 
-				memcpy(child_aux, parent_aux, sizeof(struct lazy_aux));
+                memcpy(child_aux, parent_aux, sizeof(struct lazy_aux));
 
-				child_aux->file = file_reopen(parent_aux->file);
-				if (child_aux->file == NULL) {
-					free(child_aux);
-					return false;
-				}
-				// how do you deep copy this?
-				if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, child_aux)) {
-					free(child_aux);
-					return false;
-				}
-			}
+                lock_acquire(&filesys_lock);
+                child_aux->file = file_reopen(parent_aux->file);
+                lock_release(&filesys_lock);
 
-			else {
-				if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, parent_aux))
-					return false;
-			}
-		} 
+                if (child_aux->file == NULL) {
+                    free(child_aux);
+                    return false;
+                }
+                
+                if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, child_aux)) {
+                    free(child_aux);
+                    return false;
+                }
+            } else {
+                if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, parent_aux))
+                    return false;
+            }
+        } 
+        
+        // 2. 이미 로딩된 페이지 처리
+        else {
+            /* 1) 페이지 구조체 할당 (Alloc) */
+            if (!vm_alloc_page(type, child_page, writable))
+                return false;
+            
+            /* 2) 자식 페이지 구조체 가져오기 */
+            /* dst에 방금 만들었으니 바로 찾을 수 있습니다. */
+            struct page *dst_page = spt_find_page(dst, child_page);
+            
+            /* 3) 메타데이터 먼저 복사! (중요) */
+            /* VM_FILE인 경우, claim 하기 전에 파일 정보가 있어야 swap_in이 안전하게 동작합니다. */
+            if (VM_TYPE(type) == VM_FILE) {
+                struct file_page *parent_fp = &parent_page->file;
+                struct file_page *child_fp = &dst_page->file;
+                
+                /* 구조체 내용 복사 */
+                memcpy(child_fp, parent_fp, sizeof(struct file_page));
+                
+                /* 파일 객체 Deep Copy */
+                lock_acquire(&filesys_lock);
+                child_fp->file = file_reopen(parent_fp->file);
+                lock_release(&filesys_lock);
+                
+                if (child_fp->file == NULL) return false;
+            }
 
-		else { // alloc and claim page for anon & file pages
-			if (!vm_alloc_page(type, child_page, writable))
-				return false;
-			if (!vm_claim_page(child_page))
-				return false;
-			
-			struct page *dst_page = spt_find_page(&thread_current()->spt, child_page);
-			if (dst_page) {
-				memcpy(dst_page->frame->kva, parent_page->frame->kva, PGSIZE);
-			}
-		}
-
-   	}
-	return true;
+            /* 4) 프레임 할당 (Claim) */
+            /* 이제 파일 정보가 세팅되었으니 안심하고 claim 할 수 있습니다. */
+            if (!vm_claim_page(child_page))
+                return false;
+            
+            /* 5) 물리 메모리 내용 복제 (Deep Copy) */
+            memcpy(dst_page->frame->kva, parent_page->frame->kva, PGSIZE);
+        }
+    }
+    return true;
 }
 
-void spt_destroy_func(struct hash_elem *e) {
+void spt_destroy_func(struct hash_elem *e, void *aux UNUSED) {
 	struct page *p = hash_entry(e, struct page, hash_elem);
 	vm_dealloc_page(p);
 }
@@ -339,5 +364,7 @@ void
 supplemental_page_table_kill (struct supplemental_page_table *spt) {
 	/* TODO: Destroy all the supplemental_page_table hold by thread and */
 	/* TODO: writeback all the modified contents to the storage. */
-	hash_destroy(&spt->pages, spt_destroy_func);
+	if (spt->pages.buckets != NULL) {
+        hash_destroy (&spt->pages, spt_destroy_func);
+    }
 }

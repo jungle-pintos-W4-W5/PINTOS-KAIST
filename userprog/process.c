@@ -887,9 +887,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		struct lazy_aux *aux= malloc(sizeof(struct lazy_aux));
 		if (aux == NULL)
 			return false;
-		lock_acquire(&filesys_lock);
+
 		aux->file = file_reopen(file);
-		lock_release(&filesys_lock);
 		aux->ofs = ofs;
 		aux->page_read_bytes = page_read_bytes;
 		aux->page_zero_bytes = page_zero_bytes;

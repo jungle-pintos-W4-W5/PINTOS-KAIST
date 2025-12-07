@@ -10,6 +10,10 @@
 
 #include "vm/vm.h"
 #include "vm/uninit.h"
+#include "userprog/process.h" // lazy_aux struct 선언 위해
+#include "userprog/syscall.h" // filesys_lock을 알기 위해
+#include "threads/synch.h"    // lock_acquire/release를 알기 위해
+#include "filesys/file.h"     // file_close를 알기 위해
 
 static bool uninit_initialize (struct page *page, void *kva);
 static void uninit_destroy (struct page *page);
@@ -62,7 +66,21 @@ uninit_initialize (struct page *page, void *kva) {
  * PAGE will be freed by the caller. */
 static void
 uninit_destroy (struct page *page) {
-	struct uninit_page *uninit UNUSED = &page->uninit;
+	struct uninit_page *uninit = &page->uninit;
 	/* TODO: Fill this function.
 	 * TODO: If you don't have anything to do, just return. */
+	if (uninit->aux == NULL)
+		return;
+	
+	if (VM_TYPE(uninit->type) == VM_FILE) {
+		struct lazy_aux *aux = (struct lazy_aux*) uninit->aux;
+		if (aux->file) {
+			lock_acquire(&filesys_lock);
+			file_close(aux->file);
+			lock_release(&filesys_lock);
+		}
+
+	}
+	free(uninit->aux);
+	return;
 }
