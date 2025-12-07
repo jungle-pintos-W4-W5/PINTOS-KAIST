@@ -4,6 +4,7 @@
 #include "vm/vm.h"
 #include "vm/inspect.h"
 #include "threads/vaddr.h"
+#include "userprog/process.h"
 #include <hash.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -260,19 +261,83 @@ bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
 
 /* Initialize new supplemental page table */
 void
-supplemental_page_table_init (struct supplemental_page_table *spt UNUSED) {
+supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init(&spt->pages, page_hash, va_less, NULL);
 }
 
 /* Copy supplemental page table from src to dst */
 bool
-supplemental_page_table_copy (struct supplemental_page_table *dst UNUSED,
-		struct supplemental_page_table *src UNUSED) {
+supplemental_page_table_copy (struct supplemental_page_table *dst,
+		struct supplemental_page_table *src) {
+	// Iterate through each page in the src's supplemental page table 
+	struct hash_iterator i;
+	hash_first (&i, &src->pages);
+   	while (hash_next (&i))
+	{
+		struct page *parent_page = hash_entry (hash_cur (&i), struct page, hash_elem);
+		enum vm_type type = parent_page->operations->type;
+		void *child_page = parent_page->va;
+		bool writable = parent_page->writable;
+
+		// only set initailizer for uninit pages for lazy loading
+		if (type == VM_UNINIT) {
+			vm_initializer *init = parent_page->uninit.init;
+			enum vm_type ref_type = parent_page->uninit.type;
+			struct lazy_aux *parent_aux = parent_page->uninit.aux;
+			
+			// need to copy aux of parent page
+			// but aux only exists if type is VM_FILE
+			if (ref_type & VM_FILE) {
+				
+				struct lazy_aux *child_aux = malloc(sizeof(struct lazy_aux));
+				if (child_aux == NULL)
+					return false;
+
+				memcpy(child_aux, parent_aux, sizeof(struct lazy_aux));
+
+				child_aux->file = file_reopen(parent_aux->file);
+				if (child_aux->file == NULL) {
+					free(child_aux);
+					return false;
+				}
+				// how do you deep copy this?
+				if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, child_aux)) {
+					free(child_aux);
+					return false;
+				}
+			}
+
+			else {
+				if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, parent_aux))
+					return false;
+			}
+		} 
+
+		else { // alloc and claim page for anon & file pages
+			if (!vm_alloc_page(type, child_page, writable))
+				return false;
+			if (!vm_claim_page(child_page))
+				return false;
+			
+			struct page *dst_page = spt_find_page(&thread_current()->spt, child_page);
+			if (dst_page) {
+				memcpy(dst_page->frame->kva, parent_page->frame->kva, PGSIZE);
+			}
+		}
+
+   	}
+	return true;
+}
+
+void spt_destroy_func(struct hash_elem *e) {
+	struct page *p = hash_entry(e, struct page, hash_elem);
+	vm_dealloc_page(p);
 }
 
 /* Free the resource hold by the supplemental page table */
 void
-supplemental_page_table_kill (struct supplemental_page_table *spt UNUSED) {
-	/* TODO: Destroy all the supplemental_page_table hold by thread and
-	 * TODO: writeback all the modified contents to the storage. */
+supplemental_page_table_kill (struct supplemental_page_table *spt) {
+	/* TODO: Destroy all the supplemental_page_table hold by thread and */
+	/* TODO: writeback all the modified contents to the storage. */
+	hash_destroy(&spt->pages, spt_destroy_func);
 }

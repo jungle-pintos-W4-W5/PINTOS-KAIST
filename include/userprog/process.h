@@ -23,4 +23,11 @@ struct init_aux {
     struct child *child_info;
 };
 
+struct lazy_aux {
+	struct file* file;
+	off_t ofs;
+	size_t page_read_bytes;
+	size_t page_zero_bytes;
+};
+
 #endif /* userprog/process.h */

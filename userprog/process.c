@@ -828,13 +828,6 @@ install_page (void *upage, void *kpage, bool writable) {
  * If you want to implement the function for only project 2, implement it on the
  * upper block. */
 
- struct lazy_aux {
-	struct file* file;
-	off_t ofs;
-	size_t page_read_bytes;
-	size_t page_zero_bytes;
-};
-
 static bool
 lazy_load_segment (struct page *page, void *aux) {
 	/* TODO: Load the segment from the file */
@@ -894,14 +887,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 		struct lazy_aux *aux= malloc(sizeof(struct lazy_aux));
 		if (aux == NULL)
 			return false;
-		
-
+		lock_acquire(&filesys_lock);
 		aux->file = file_reopen(file);
+		lock_release(&filesys_lock);
 		aux->ofs = ofs;
 		aux->page_read_bytes = page_read_bytes;
 		aux->page_zero_bytes = page_zero_bytes;
 
-		if (!vm_alloc_page_with_initializer (VM_ANON, upage,
+		if (!vm_alloc_page_with_initializer (VM_FILE, upage,
 					writable, lazy_load_segment, aux)) {
 			free(aux);
 			return false;
