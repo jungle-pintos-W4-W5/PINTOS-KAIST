@@ -365,6 +365,9 @@ process_exec (void *f_name) {
 	_if.eflags = FLAG_IF | FLAG_MBS;
 	/* We first kill the current context */
 	process_cleanup ();
+#ifdef VM
+    supplemental_page_table_init (&thread_current()->spt);
+#endif
 	/* load 할 파일의 의 크기에 맞추어 따로 분리하여 전달 */
 	char load_name[NAME_MAX + 1]; // NAME_MAX (directory.h)
 	parse_name(load_name, f_name, sizeof(load_name));
