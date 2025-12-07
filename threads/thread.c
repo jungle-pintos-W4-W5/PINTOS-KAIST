@@ -196,6 +196,10 @@ thread_create (const char *name, int priority,
 	tid = t->tid = allocate_tid ();
 	list_push_back(&all_list, &t->id_elem);
 
+#ifdef VM
+	supplemental_page_table_init(&t->spt);
+#endif
+
 	/* Call the kernel_thread if it scheduled.
 	 * Note) rdi is 1st argument, and rsi is 2nd argument. */
 	t->tf.rip = (uintptr_t) kernel_thread;
@@ -469,10 +473,6 @@ init_thread (struct thread *t, const char *name, int priority) {
 	t->exit_status = -1;
 	list_init(&t->fd_table);
 	list_init(&t->children);
-#endif
-
-#ifdef VM
-	supplemental_page_table_init(&t->spt);
 #endif
 	
 }

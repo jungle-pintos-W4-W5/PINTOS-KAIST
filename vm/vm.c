@@ -3,6 +3,7 @@
 #include "threads/malloc.h"
 #include "vm/vm.h"
 #include "vm/inspect.h"
+#include "threads/vaddr.h"
 #include <hash.h>
 
 /* Initializes the virtual memory subsystem by invoking each subsystem's
@@ -17,6 +18,7 @@ vm_init (void) {
 	register_inspect_intr ();
 	/* DO NOT MODIFY UPPER LINES. */
 	/* TODO: Your code goes here. */
+	supplemental_page_table_init(&thread_current()->spt);
 }
 
 /* Get the type of the page. This function is useful if you want to know the
@@ -72,11 +74,10 @@ vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
 		/* TODO: You should modify the field after calling the uninit_new. */
 		p->writable = writable;
 
-		/* TODO: Insert the page into the spt. */
-		if (!vm_claim_page(upage))
+		if (!spt_insert_page(&spt->pages, p)) 
 			goto err;
-		if (!spt_insert_page(&spt->pages, &p->hash_elem)) 
-			goto err;
+
+		return true;
 	}
 err:
 	return false;
@@ -157,7 +158,7 @@ vm_get_frame (void) {
 
 	void *kva = palloc_get_page(PAL_USER);
 	if (kva == NULL) {
-		free (kva);
+		free(frame);
 		PANIC("todo"); // todo: eviction algorithm
 	}
 
@@ -165,7 +166,7 @@ vm_get_frame (void) {
 	frame->page = NULL;
 
 	ASSERT (frame != NULL);
-	ASSERT (frame->page != NULL);
+	ASSERT (frame->page == NULL);
 	return frame;
 }
 
@@ -184,27 +185,23 @@ bool
 vm_try_handle_fault (struct intr_frame *f, void *addr,
 		bool user, bool write, bool not_present) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
-	struct page *page;
+    
+    if (is_kernel_vaddr(addr) && user) return false;
 
-	/* First thing do do..? Validate the fault 
-	==> user / kernel access?
-	if (user && not_present) return false
-	if (user && !not_present) 
-	if (kernel && not_present)
-	if (kernel && !not_present)
-	*/
-	
-	/*
-	1. not_present 1 : not-present page (not in RAM)
-		- check valid addr (what are standards)
-			- 
-	2. not_present 0 : access right violation (writing r/o page)
-		- vm_handle_wp() - shouldn't it just return false? cuz it shouldn't happen?
-		- any other cases than 'writing r/o page?'
-	
-	*/
+    // 주소 정렬 후 페이지 검색
+    void *page_start = pg_round_down(addr);
+    struct page *page = spt_find_page(spt, page_start);
 
+    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 */
+    if (page == NULL) {
+        return false; // 임시
+    }
 
+    // write on r/o
+    if (!not_present && write) {
+        return false; 
+    }
+    
 	return vm_do_claim_page (page);
 }
 
