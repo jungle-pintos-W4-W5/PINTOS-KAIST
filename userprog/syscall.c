@@ -76,6 +76,8 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	uint64_t arg1 = f->R.rdi;	
 	uint64_t arg2 = f->R.rsi;	
 	uint64_t arg3 = f->R.rdx;	
+	
+	thread_current()->rsp = f->rsp;
 
 	switch (syscall_number) {
 		case SYS_EXIT:

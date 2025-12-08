@@ -43,8 +43,12 @@ page_get_type (struct page *page) {
 static struct frame *vm_get_victim (void);
 static bool vm_do_claim_page (struct page *page);
 static struct frame *vm_evict_frame (void);
-uint64_t page_hash (const struct hash_elem *e, void *aux);
-bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
+static uint64_t page_hash (const struct hash_elem *e, void *aux);
+static bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux);
+// for spt copy
+static struct lazy_aux *copy_lazy_aux(struct lazy_aux *src_aux);
+static bool copy_uninit_page(struct page *parent_page, void *upage, bool writable);
+static bool copy_claimed_page(struct supplemental_page_table *dst, struct page *parent_page, void *upage, bool writable);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -178,6 +182,8 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
+	if (!vm_alloc_page((VM_ANON | VM_MARKER_0), addr, true))
+		vm_claim_page(addr);
 }
 
 /* Handle the fault on write_protected page */
@@ -191,21 +197,38 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 		bool user, bool write, bool not_present) {
 	struct supplemental_page_table *spt = &thread_current ()->spt;
     
+	// There are three cases of bogus page fault: 
+	// (1) lazy-loaded (2) swapped-out page (3)write-protected page
+	// If it is a page fault for lazy loading, 
+	// the kernel calls one of the initializers you previously set in vm_alloc_page_with_initializer to lazy load the segment. 
     if (is_kernel_vaddr(addr) && user) return false;
 
     // 주소 정렬 후 페이지 검색
     void *page_start = pg_round_down(addr);
     struct page *page = spt_find_page(spt, page_start);
 
-    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 */
-    if (page == NULL) {
-        return false; // 임시
+    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 이게 문제네*/
+    if (page == NULL) {	 
+		uintptr_t rsp = user ? f->rsp : thread_current()->rsp;
+
+		if ((uintptr_t) addr >= (uintptr_t) (USER_STACK - (1 << 20)) &&
+			addr < USER_STACK &&
+			(uintptr_t) addr >= rsp - 8) {
+			
+			vm_stack_growth(page_start);	
+			// stack page 할당 성공 확인
+			page = spt_find_page(spt, page_start);
+			if (page == NULL) 
+				return false;
+		} else 
+			return false;
     }
 
     // write on r/o
     if (!not_present && write) {
         return false; 
     }
+
     
 	return vm_do_claim_page (page);
 }
@@ -250,14 +273,14 @@ vm_do_claim_page (struct page *page) {
 
 	return swap_in (page, frame->kva);
 }
-
-uint64_t page_hash (const struct hash_elem *e, void *aux) {
+/* hash_init 함수들어가는 hash 값 생성 함수 */
+static uint64_t page_hash (const struct hash_elem *e, void *aux) {
 	struct page* p = hash_entry(e, struct page, hash_elem);
 	uint64_t hash = hash_bytes(&p->va,sizeof(void*));
 	return hash;
 }
-
-bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
+/* hash_init 함수들어가는 bucket 별 리스트 삽입시 va값 순 정렬 함수 */
+static bool va_less (const struct hash_elem *a, const struct hash_elem *b, void *aux) {
 	struct page* p_a = hash_entry(a, struct page, hash_elem);
 	struct page* p_b = hash_entry(b, struct page, hash_elem);
 	return p_a->va < p_b->va;
@@ -269,92 +292,140 @@ supplemental_page_table_init (struct supplemental_page_table *spt) {
 	hash_init(&spt->pages, page_hash, va_less, NULL);
 }
 
-/* Copy supplemental page table from src to dst */
 bool
 supplemental_page_table_copy (struct supplemental_page_table *dst,
         struct supplemental_page_table *src) {
-    // Iterate through each page in the src's supplemental page table 
+    
     struct hash_iterator i;
     hash_first (&i, &src->pages);
-    while (hash_next (&i))
-    {
+    
+    while (hash_next (&i)) {
         struct page *parent_page = hash_entry (hash_cur (&i), struct page, hash_elem);
         enum vm_type type = parent_page->operations->type;
-        void *child_page = parent_page->va;
+        void *upage = parent_page->va;
         bool writable = parent_page->writable;
 
-        // 1. UNINIT 페이지 처리 (이 부분은 잘 작성하셨습니다)
         if (type == VM_UNINIT) {
-            vm_initializer *init = parent_page->uninit.init;
-            enum vm_type ref_type = parent_page->uninit.type;
-            struct lazy_aux *parent_aux = parent_page->uninit.aux;
-            
-            if (ref_type & VM_FILE) {
-                struct lazy_aux *child_aux = malloc(sizeof(struct lazy_aux));
-                if (child_aux == NULL)
-                    return false;
-
-                memcpy(child_aux, parent_aux, sizeof(struct lazy_aux));
-
-                lock_acquire(&filesys_lock);
-                child_aux->file = file_reopen(parent_aux->file);
-                lock_release(&filesys_lock);
-
-                if (child_aux->file == NULL) {
-                    free(child_aux);
-                    return false;
-                }
-                
-                if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, child_aux)) {
-                    free(child_aux);
-                    return false;
-                }
-            } else {
-                if (!vm_alloc_page_with_initializer(ref_type, child_page, writable, init, parent_aux))
-                    return false;
-            }
-        } 
-        
-        // 2. 이미 로딩된 페이지 처리
-        else {
-            /* 1) 페이지 구조체 할당 (Alloc) */
-            if (!vm_alloc_page(type, child_page, writable))
+            /* Case 1: 아직 로딩되지 않은 페이지 (UNINIT) */
+            if (!copy_uninit_page(parent_page, upage, writable))
                 return false;
-            
-            /* 2) 자식 페이지 구조체 가져오기 */
-            /* dst에 방금 만들었으니 바로 찾을 수 있습니다. */
-            struct page *dst_page = spt_find_page(dst, child_page);
-            
-            /* 3) 메타데이터 먼저 복사! (중요) */
-            /* VM_FILE인 경우, claim 하기 전에 파일 정보가 있어야 swap_in이 안전하게 동작합니다. */
-            if (VM_TYPE(type) == VM_FILE) {
-                struct file_page *parent_fp = &parent_page->file;
-                struct file_page *child_fp = &dst_page->file;
-                
-                /* 구조체 내용 복사 */
-                memcpy(child_fp, parent_fp, sizeof(struct file_page));
-                
-                /* 파일 객체 Deep Copy */
-                lock_acquire(&filesys_lock);
-                child_fp->file = file_reopen(parent_fp->file);
-                lock_release(&filesys_lock);
-                
-                if (child_fp->file == NULL) return false;
-            }
-
-            /* 4) 프레임 할당 (Claim) */
-            /* 이제 파일 정보가 세팅되었으니 안심하고 claim 할 수 있습니다. */
-            if (!vm_claim_page(child_page))
+        } else {
+            /* Case 2: 이미 메모리에 로딩된 페이지 (ANON, FILE) */
+            if (!copy_claimed_page(dst, parent_page, upage, writable))
                 return false;
-            
-            /* 5) 물리 메모리 내용 복제 (Deep Copy) */
-            memcpy(dst_page->frame->kva, parent_page->frame->kva, PGSIZE);
         }
     }
     return true;
 }
 
-void spt_destroy_func(struct hash_elem *e, void *aux UNUSED) {
+/* spt_copy helper(1): UNINIT 페이지 처리 
+- VM_FILE인 경우 aux를 복사하고, 아니면 그대로 넘김. */
+static bool 
+copy_uninit_page(struct page *parent_page, void *upage, bool writable) {
+    vm_initializer *init = parent_page->uninit.init;
+    enum vm_type ref_type = parent_page->uninit.type;
+    void *parent_aux = parent_page->uninit.aux;
+    void *child_aux = parent_aux; // 기본값: 얕은 복사 (VM_ANON 등은 부모 aux 그대로 사용)
+
+    /* 특수 케이스: VM_FILE은 깊은 복사로 덮어쓰기 */
+    if (VM_TYPE(ref_type) == VM_FILE) {
+        child_aux = copy_lazy_aux((struct lazy_aux *)parent_aux);
+        
+        /* Deep Copy 실패 시 (부모 aux는 있는데 자식 aux 할당 못함) */
+        if (parent_aux != NULL && child_aux == NULL)
+            return false;
+    }
+
+    /* 페이지 할당 요청 */
+    if (!vm_alloc_page_with_initializer(ref_type, upage, writable, init, child_aux)) {
+        /* ⚠️ 주의: 할당 실패 시 '내가 malloc한 경우'에만 free 해야 함! */
+        /* VM_ANON이라서 parent_aux를 그대로 썼는데 free 하면 큰일 남 (Double Free 이슈) */
+        if (VM_TYPE(ref_type) == VM_FILE && child_aux != NULL) {
+            free(child_aux);
+        }
+        return false;
+    }
+
+    return true;
+}
+/* spt_copy helper(2): Claimed(Loaded) 페이지 처리 
+- ANON/FILE 페이지의 구조체 생성, 메타데이터 복사, 프레임 복사를 담당합니다. */
+static bool 
+copy_claimed_page(struct supplemental_page_table *dst, struct page *parent_page, void *upage, bool writable) {
+    enum vm_type type = parent_page->operations->type;
+
+    if (!vm_alloc_page(type, upage, writable))
+        return false;
+
+    /* 자식 페이지 구조체 찾기 */
+    struct page *dst_page = spt_find_page(dst, upage);
+    if (dst_page == NULL)
+        return false;
+
+    /* 프레임 할당 (Claim) -> UNINIT 정보를 읽고 초기화 후 FILE 상태로 변신! */
+    if (!vm_claim_page(upage))
+        return false;
+
+    /* VM_FILE 메타데이터 복사 */
+    if (VM_TYPE(type) == VM_FILE) {
+        struct file_page *parent_fp = &parent_page->file;
+        struct file_page *child_fp = &dst_page->file;
+
+        /* 기본 정보 복사 */
+        memcpy(child_fp, parent_fp, sizeof(struct file_page));
+
+        /* 파일 객체 Deep Copy */
+        if (parent_fp->file != NULL) {
+            lock_acquire(&filesys_lock);
+            child_fp->file = file_reopen(parent_fp->file);
+            lock_release(&filesys_lock);            
+            
+            if (child_fp->file == NULL) 
+                return false;
+        } 
+        else {
+            return false; 
+        }
+    }
+
+    /* 물리 메모리 내용 복제 (Deep Copy) */
+    memcpy(dst_page->frame->kva, parent_page->frame->kva, PGSIZE);
+
+    return true;
+}
+
+/* spt_copy helper (3) ft.copy_uninit helper
+==> Lazy Aux 깊은 복사 (Deep Copy) */
+static struct lazy_aux *
+copy_lazy_aux(struct lazy_aux *src_aux) {
+    if (src_aux == NULL)
+        return NULL;
+
+    struct lazy_aux *dst_aux = malloc(sizeof(struct lazy_aux));
+    if (dst_aux == NULL)
+        return NULL;
+
+    memcpy(dst_aux, src_aux, sizeof(struct lazy_aux));
+
+    /* 파일 객체 Deep Copy (핵심) */
+    lock_acquire(&filesys_lock);
+    if (src_aux->file) {
+        dst_aux->file = file_reopen(src_aux->file);
+    } else {
+        dst_aux->file = NULL;
+    }
+    lock_release(&filesys_lock);
+
+    /* 파일 복제 실패 시 정리 */
+    if (src_aux->file != NULL && dst_aux->file == NULL) {
+        free(dst_aux);
+        return NULL;
+    }
+
+    return dst_aux;
+}
+
+static void spt_destroy_func(struct hash_elem *e, void *aux UNUSED) {
 	struct page *p = hash_entry(e, struct page, hash_elem);
 	vm_dealloc_page(p);
 }

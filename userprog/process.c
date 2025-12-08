@@ -248,7 +248,6 @@ __do_fork (void *aux) {
 
 	process_activate (current);
 #ifdef VM
-	supplemental_page_table_init (&current->spt);
 	if (!supplemental_page_table_copy (&current->spt, &parent->spt))
 		goto error;
 #else
@@ -843,13 +842,20 @@ lazy_load_segment (struct page *page, void *aux) {
 		return false;
 
 	lock_acquire (&filesys_lock);
-	off_t bytes_read = file_read_at (l_aux->file, kpage, l_aux->page_read_bytes, l_aux->ofs);
+    off_t bytes_read = file_read_at (l_aux->file, kpage, l_aux->page_read_bytes, l_aux->ofs);
 	lock_release (&filesys_lock);
+    
+    if (bytes_read != (int) l_aux->page_read_bytes) {
+        file_close(l_aux->file); 
+        lock_release (&filesys_lock);
+        free(aux);
+        return false;
+    }
 	
-	if (bytes_read != (int) l_aux->page_read_bytes) {
-		free(aux);
-		return false;
-	}
+	page->file.file = l_aux->file; // 소유권 이전 (닫지 않음!)
+    page->file.ofs = l_aux->ofs;
+    page->file.read_bytes = l_aux->page_read_bytes;
+    page->file.zero_bytes = l_aux->page_zero_bytes;
 
 	memset (kpage + l_aux->page_read_bytes, 0, l_aux->page_zero_bytes);
 	free(aux);
@@ -898,6 +904,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
 		if (!vm_alloc_page_with_initializer (VM_FILE, upage,
 					writable, lazy_load_segment, aux)) {
+			file_close(aux->file);
 			free(aux);
 			return false;
 		}
