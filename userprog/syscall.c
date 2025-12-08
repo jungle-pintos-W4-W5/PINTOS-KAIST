@@ -206,10 +206,9 @@ static int sys_filesize (int fd) {
 	struct thread *curr = thread_current();
 
 	struct file* file = get_file_from_fd(fd);
-	if (file == NULL) {
+	if (file == NULL) 
 		return NULL;
-	}
-
+	
 	lock_acquire(&filesys_lock);
 	int f_size = file_length(file);
 	lock_release(&filesys_lock);
@@ -229,9 +228,8 @@ static int sys_read (int fd, void *buffer, unsigned size) {
 	check_valid_fd(fd);
 
 	struct file* file = get_file_from_fd(fd);
-	if (file == NULL) {
+	if (file == NULL) 
 		return -1;
-	}
 
 	lock_acquire(&filesys_lock);
 	int bytes_read = file_read(file, buffer, size);
@@ -255,9 +253,8 @@ static int sys_write (int fd, const void *buffer, unsigned size) {
 
 
 	struct file* file = get_file_from_fd(fd);
-	if (file == NULL) {
+	if (file == NULL) 
 		return -1;
-	}
 
 	lock_acquire(&filesys_lock);
 	int bytes_written = file_write(file, buffer, size);
@@ -270,9 +267,8 @@ static void sys_seek (int fd, unsigned position) {
 	check_valid_fd(fd);
 
 	struct file* file = get_file_from_fd(fd);
-	if (file == NULL) {
+	if (file == NULL) 
 		return -1;
-	}
 
 	lock_acquire(&filesys_lock);
 	file_seek(file, position);
@@ -283,9 +279,8 @@ static unsigned sys_tell (int fd) {
 	check_valid_fd(fd);
 
 	struct file* file = get_file_from_fd(fd);
-	if (file == NULL) {
+	if (file == NULL) 
 		return -1;
-	}
 
 	lock_acquire(&filesys_lock);
 	unsigned start = file_tell(file);
@@ -305,6 +300,7 @@ static int sys_exec (const char *file) {
 	char *f_cpy = palloc_get_page(0);
 	if (f_cpy == NULL)
 		sys_exit(-1);
+
 	strlcpy(f_cpy, file, PGSIZE);
 
 	if (process_exec(f_cpy) == -1)
@@ -392,16 +388,14 @@ static struct file_descriptor* find_fd (struct thread* t, int fd) {
 /* fd를 통해 file 객체를 찾아 반환하는 헬퍼 함수 */
 static struct file * get_file_from_fd (int fd) {
     /* 1. fd 범위 체크 (이미 check_valid_fd가 있다면 생략 가능하지만 안전을 위해) */
-    if (fd < 0 || fd >= MAX_FD) {
+    if (fd < 0 || fd >= MAX_FD) 
         return NULL;
-    }
 
     /* 2. fd_table에서 entry 찾기 */
     struct file_descriptor *fd_struct = find_fd(thread_current(), fd);
     
-    if (fd_struct == NULL) {
+    if (fd_struct == NULL) 
         return NULL;
-    }
 
     /* 3. file 객체 반환 (NULL일 수도 있음) */
     return fd_struct->fd_file;
