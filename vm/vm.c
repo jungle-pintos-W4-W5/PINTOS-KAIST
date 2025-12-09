@@ -56,8 +56,7 @@ static bool is_stack_growth (void *addr, uintptr_t rsp);
  * page, do not create it directly and make it through this function or
  * `vm_alloc_page`. */
 bool
-vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable,
-		vm_initializer *init, void *aux) {
+vm_alloc_page_with_initializer (enum vm_type type, void *upage, bool writable, vm_initializer *init, void *aux) {
 
 	ASSERT (VM_TYPE(type) != VM_UNINIT)
 
@@ -182,10 +181,11 @@ vm_get_frame (void) {
 }
 
 /* Growing the stack. */
-static void
-vm_stack_growth (void *addr UNUSED) {
+static bool
+vm_stack_growth (void *addr) {
 	if (vm_alloc_page((VM_ANON | VM_MARKER_0), addr, true))
-		vm_claim_page(addr);
+		return vm_claim_page(addr);
+	return false;
 }
 
 /* Handle the fault on write_protected page */
@@ -207,26 +207,24 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
     // 주소 정렬 후 페이지 검색
     void *page_start = pg_round_down(addr);
     struct page *page = spt_find_page(spt, page_start);
+	uintptr_t rsp = user ? f->rsp : thread_current()->rsp;
 
-    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 이게 문제네 */
-    if (page == NULL) {	 
-		uintptr_t rsp = user ? f->rsp : thread_current()->rsp;
+	if (is_kernel_vaddr(addr) && user) return false; // page fault handler에서 처리하긴 하는데 fast fail기능 및 함수 목적성에 부합
 
-		if (is_stack_growth(addr, rsp)) {
-			vm_stack_growth(page_start);	
-			page = spt_find_page(spt, page_start);
-		}
+	if (page != NULL) { // 페이지 존재: LAZY LOADING || SWAP IN
+		// write on r/o
+	  	if (!page->writable && write) {
+        	return false; 
+    	}
+		
+		return vm_do_claim_page (page);	
+	}
 
-		if (page == NULL) 
-			return false;
-	} 
-    // write on r/o
-    if (!not_present && write) {
-        return false; 
-    }
+    // 페이지가 부재 -> 스택 증가인지 확인
+	if (is_stack_growth(addr, rsp)) 
+		return vm_stack_growth(page_start);	
 
-    
-	return vm_do_claim_page (page);
+	return false;
 }
 
 // 주소와 RSP를 받아 스택 증가가 가능한지 판단
@@ -234,13 +232,11 @@ static bool
 is_stack_growth (void *addr, uintptr_t rsp) {
 
     bool valid_stack_range = 
-        (uintptr_t)addr >= (uintptr_t)(USER_STACK - (1 << 20)) && 
-        (uintptr_t)addr < (uintptr_t)USER_STACK;
+        (uintptr_t)addr >= (uintptr_t)(USER_STACK - (1 << 20)) &&  // 스택 최대 크기 1MB 초과하지 않고
+        (uintptr_t)addr < (uintptr_t)USER_STACK &&	// 스택주소 최댓값(시작점)보다 작고
+		(uintptr_t)addr >= rsp - 8;	// PUSH 고려하였을 때 유효한 rsp인지
 
-    // PUSH 명령어 고려 (RSP - 8)
-    bool valid_rsp = (uintptr_t)addr >= rsp - 8;
-
-    return valid_stack_range && valid_rsp;
+    return valid_stack_range;
 }
 
 /* Free the page.
