@@ -11,13 +11,15 @@
 #include "threads/synch.h"
 #include "userprog/process.h"
 #include "threads/palloc.h"
+#include "vm/vm.h"
 
 void syscall_entry (void);
 void syscall_handler (struct intr_frame *);
 
-static void check_valid_ptr (void *ptr);
+static void validate_ptr (void *ptr);
 static void check_valid_fd (int fd);
-static void validate_buffer(void *buffer, unsigned size);
+static void validate_buffer(void *buffer, unsigned size, bool to_write);
+static void try_prefault(char *addr, bool to_write);
 static int allocate_fd(struct thread* t);
 static bool lesser_fd(struct list_elem *a, struct list_elem *b, void *aux);
 static struct file_descriptor* find_fd (struct thread* t, int fd);
@@ -77,8 +79,6 @@ syscall_handler (struct intr_frame *f UNUSED) {
 	uint64_t arg2 = f->R.rsi;	
 	uint64_t arg3 = f->R.rdx;	
 	
-	thread_current()->rsp = f->rsp;
-
 	switch (syscall_number) {
 		case SYS_EXIT:
 			sys_exit(arg1);
@@ -136,7 +136,7 @@ static void sys_exit (int status) {
 }
 
 static bool sys_create (const char *file, unsigned initial_size) {
-	check_valid_ptr(file);
+	validate_string(file);
 
 	lock_acquire(&filesys_lock);
 	bool success = filesys_create(file, initial_size);
@@ -145,7 +145,7 @@ static bool sys_create (const char *file, unsigned initial_size) {
 	return success;
 }
 static bool sys_remove (const char *file) {
-	check_valid_ptr(file);
+	validate_ptr(file);
 	
 	lock_acquire(&filesys_lock);
 	bool success = filesys_remove(file);
@@ -155,7 +155,7 @@ static bool sys_remove (const char *file) {
 }
 
 static int sys_open (const char *file_name) {
-	check_valid_ptr(file_name);
+	validate_string(file_name);
 	
 	lock_acquire(&filesys_lock);
 
@@ -217,8 +217,7 @@ static int sys_filesize (int fd) {
 }
 
 static int sys_read (int fd, void *buffer, unsigned size) {
-	
-	validate_buffer(buffer, size);
+	validate_buffer(buffer, size, true);
 
 	if (fd == 0) {
 		input_getc();
@@ -242,7 +241,7 @@ static int sys_read (int fd, void *buffer, unsigned size) {
 }
 
 static int sys_write (int fd, const void *buffer, unsigned size) {
-	validate_buffer(buffer, size);
+	validate_buffer(buffer, size, false);
 
 	if (fd == 1) {
 		putbuf(buffer, size);
@@ -290,13 +289,13 @@ static unsigned sys_tell (int fd) {
 }
 
 static tid_t sys_fork (const char *thread_name, struct intr_frame *f) {
-    check_valid_ptr(thread_name);
+    validate_ptr(thread_name);
 
     return process_fork(thread_name, f);
 }
 
 static int sys_exec (const char *file) {
-	check_valid_ptr(file);
+	validate_string(file);
 	char *f_cpy = palloc_get_page(0);
 	if (f_cpy == NULL)
 		sys_exit(-1);
@@ -316,14 +315,13 @@ static int sys_wait (tid_t pid) {
 
 
 /* ########### HELPER FUNCTIONS ############## */
-static void check_valid_ptr (void *ptr) {
-	if (ptr == NULL)	// if invalid ptr
+static void validate_ptr (void *ptr) {
+	if (ptr == NULL || is_kernel_vaddr(ptr))	// if invalid ptr
 		sys_exit(-1);
 	
-	if (is_kernel_vaddr(ptr))	// if is not user vaddr
-		sys_exit(-1);
+	struct page *page = spt_find_page(&thread_current()->spt, pg_round_down(ptr));
 
-	if (pml4_get_page(thread_current()->pml4, ptr) == NULL)	// if is not mapped
+	if (page == NULL)
 		sys_exit(-1);
 }
 
@@ -332,14 +330,46 @@ static void check_valid_fd (int fd) {
 		sys_exit(-1);
 }
 
-static void validate_buffer(void *buffer, unsigned size) {
-    uint8_t *addr = buffer;
-    uint8_t *end = addr + size;
+/* helper: 주소를 찔러서(Touch) Page Fault를 유도 */
+static void try_prefault(char *addr, bool to_write) {
+    validate_ptr(addr); 
 
-    while (addr < end) {
-        check_valid_ptr(addr);
-        addr++;
+    /* 실제로 건드리기 (Pre-faulting) */
+    if (to_write) {
+        /* 쓰기 시도: 읽어서 다시 씀 (Dirty bit, Writable 체크) */
+        volatile char dummy = *addr;
+        *addr = dummy; // 읽은 값 그대로 다시 쓰기 (훼손 ㄴ)
+    } else {
+        /* 읽기 시도: 그냥 읽어봄 (Present bit 체크) */
+        volatile char dummy = *addr;
+        (void)dummy; 
     }
+}
+
+static void validate_buffer(void *buffer, unsigned size, bool to_write) {
+    char *start = (char *)buffer;
+    char *end = start + size;
+    
+    // 시작 주소부터 페이지 단위로 점프하며 찌르기
+    for (char *addr = start; addr < end; addr += PGSIZE) {
+        try_prefault(addr, to_write);
+    }
+    /* 2. 마지막 주소도 찌르기 (중요: 페이지 경계에 걸쳐 있을 때 필수) */
+    /* 예: buffer가 0x1000에서 시작해 4097바이트라면, 
+       위 루프는 0x1000만 검사하므로 0x2000(마지막 1바이트)도 검사해야 함 */
+    if (size > 0) {
+        try_prefault(end - 1, to_write);
+    }
+}
+
+void validate_string(const char *str) {
+    validate_ptr(str);
+    while (*str != '\0') {
+        validate_ptr(str);  // str이 valid page인지 확인
+        str++;
+    }
+    // 마지막 '\0'도 검사
+    validate_ptr(str);
 }
 
 // returns available fd

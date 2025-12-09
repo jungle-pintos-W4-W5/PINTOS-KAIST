@@ -49,6 +49,8 @@ static bool va_less (const struct hash_elem *a, const struct hash_elem *b, void 
 static struct lazy_aux *copy_lazy_aux(struct lazy_aux *src_aux);
 static bool copy_uninit_page(struct page *parent_page, void *upage, bool writable);
 static bool copy_claimed_page(struct supplemental_page_table *dst, struct page *parent_page, void *upage, bool writable);
+// for fault handling - stack growth check
+static bool is_stack_growth (void *addr, uintptr_t rsp);
 
 /* Create the pending page object with initializer. If you want to create a
  * page, do not create it directly and make it through this function or
@@ -165,7 +167,7 @@ vm_get_frame (void) {
 	if (frame == NULL)
 		return NULL;
 
-	void *kva = palloc_get_page(PAL_USER);
+	void *kva = palloc_get_page(PAL_USER | PAL_ZERO);
 	if (kva == NULL) {
 		free(frame);
 		PANIC("todo"); // todo: eviction algorithm
@@ -182,7 +184,7 @@ vm_get_frame (void) {
 /* Growing the stack. */
 static void
 vm_stack_growth (void *addr UNUSED) {
-	if (!vm_alloc_page((VM_ANON | VM_MARKER_0), addr, true))
+	if (vm_alloc_page((VM_ANON | VM_MARKER_0), addr, true))
 		vm_claim_page(addr);
 }
 
@@ -201,29 +203,23 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 	// (1) lazy-loaded (2) swapped-out page (3)write-protected page
 	// If it is a page fault for lazy loading, 
 	// the kernel calls one of the initializers you previously set in vm_alloc_page_with_initializer to lazy load the segment. 
-    if (is_kernel_vaddr(addr) && user) return false;
 
     // 주소 정렬 후 페이지 검색
     void *page_start = pg_round_down(addr);
     struct page *page = spt_find_page(spt, page_start);
 
-    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 이게 문제네*/
+    // 페이지가 없는 경우 (NULL) -> 스택 증가인지 확인 이게 문제네 */
     if (page == NULL) {	 
 		uintptr_t rsp = user ? f->rsp : thread_current()->rsp;
 
-		if ((uintptr_t) addr >= (uintptr_t) (USER_STACK - (1 << 20)) &&
-			addr < USER_STACK &&
-			(uintptr_t) addr >= rsp - 8) {
-			
+		if (is_stack_growth(addr, rsp)) {
 			vm_stack_growth(page_start);	
-			// stack page 할당 성공 확인
 			page = spt_find_page(spt, page_start);
-			if (page == NULL) 
-				return false;
-		} else 
-			return false;
-    }
+		}
 
+		if (page == NULL) 
+			return false;
+	} 
     // write on r/o
     if (!not_present && write) {
         return false; 
@@ -231,6 +227,20 @@ vm_try_handle_fault (struct intr_frame *f, void *addr,
 
     
 	return vm_do_claim_page (page);
+}
+
+// 주소와 RSP를 받아 스택 증가가 가능한지 판단
+static bool
+is_stack_growth (void *addr, uintptr_t rsp) {
+
+    bool valid_stack_range = 
+        (uintptr_t)addr >= (uintptr_t)(USER_STACK - (1 << 20)) && 
+        (uintptr_t)addr < (uintptr_t)USER_STACK;
+
+    // PUSH 명령어 고려 (RSP - 8)
+    bool valid_rsp = (uintptr_t)addr >= rsp - 8;
+
+    return valid_stack_range && valid_rsp;
 }
 
 /* Free the page.
