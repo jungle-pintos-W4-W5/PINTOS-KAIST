@@ -9,6 +9,7 @@ int process_exec (void *f_name);
 int process_wait (tid_t);
 void process_exit (void);
 void process_activate (struct thread *next);
+bool lazy_load_segment (struct page *page, void *aux);
 
 struct fork_aux {
     struct thread *parent;
@@ -21,6 +22,13 @@ struct fork_aux {
 struct init_aux {
     char *fn_copy;
     struct child *child_info;
+};
+
+struct lazy_aux {
+	struct file* file;
+	off_t ofs;
+	size_t page_read_bytes;
+	size_t page_zero_bytes;
 };
 
 #endif /* userprog/process.h */

@@ -100,8 +100,10 @@ struct thread {
 
 	struct list donations_recieved;		/* 받은 Donation 보관용 */
 	struct list_elem donation;			/* Donation 줄 때 넘겨줄 구조체 */
-	struct lock *waiting_lock;			/* 현재 기다리는 락에 대한 포인터 */
-	
+	struct lock *waiting_lock;			/* 현재 기다리는 락에 대한 포인터 
+	*/
+	struct list_elem id_elem;
+
 
 #ifdef USERPROG
 	/* Owned by userprog/process.c. */
@@ -110,13 +112,13 @@ struct thread {
 	struct list fd_table;
 	struct list children;
 	struct child* child_info;
-	struct list_elem id_elem;
 	struct file *running_file;
 
 #endif
 #ifdef VM
 	/* Table for whole virtual memory owned by thread. */
 	struct supplemental_page_table spt;
+	uintptr_t rsp;
 #endif
 
 	/* Owned by thread.c. */
