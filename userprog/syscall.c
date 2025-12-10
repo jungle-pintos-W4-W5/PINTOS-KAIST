@@ -12,14 +12,18 @@
 #include "userprog/process.h"
 #include "userprog/syscall.h"
 #include "vm/vm.h"
+#include "vm/file.h"
 
 void syscall_entry(void);
 void syscall_handler(struct intr_frame*);
 
 static void validate_ptr(void* ptr);
-static void check_valid_fd(int fd);
+static void validate_fd(int fd);
 static void validate_buffer(void* buffer, unsigned size, bool to_write);
+static void validate_writable_page(char* addr, bool to_write);
+static void validate_string(const char* str);
 static void try_prefault(char* addr, bool to_write);
+static bool validate_mmap_condition(void* addr, size_t length, int writable, int fd, off_t offset);
 static int allocate_fd(struct thread* t);
 static bool lesser_fd(struct list_elem* a, struct list_elem* b, void* aux);
 static struct file_descriptor* find_fd(struct thread* t, int fd);
@@ -60,6 +64,9 @@ static void sys_munmap(void* addr);
 #define MSR_STAR 0xc0000081         /* Segment selector msr */
 #define MSR_LSTAR 0xc0000082        /* Long mode SYSCALL target */
 #define MSR_SYSCALL_MASK 0xc0000084 /* Mask for the eflags */
+
+#define FAIL_EXIT -1
+#define MMAP_FAIL NULL
 
 void syscall_init(void) {
     write_msr(MSR_STAR,
@@ -175,7 +182,7 @@ static int sys_open(const char* file_name) {
     struct file* file = filesys_open(file_name);
     if (file == NULL) {
         lock_release(&filesys_lock);
-        return -1;
+        return FAIL_EXIT;
     }
     lock_release(&filesys_lock);
 
@@ -190,7 +197,7 @@ static int sys_open(const char* file_name) {
 }
 
 static void sys_close(int fd) {
-    check_valid_fd(fd);
+    validate_fd(fd);
 
     struct thread* cur = thread_current();
 
@@ -215,7 +222,7 @@ static void sys_close(int fd) {
 }
 
 static int sys_filesize(int fd) {
-    check_valid_fd(fd);
+    validate_fd(fd);
     struct thread* curr = thread_current();
 
     struct file* file = get_file_from_fd(fd);
@@ -237,11 +244,11 @@ static int sys_read(int fd, void* buffer, unsigned size) {
         return;
     }
 
-    check_valid_fd(fd);
+    validate_fd(fd);
 
     struct file* file = get_file_from_fd(fd);
     if (file == NULL)
-        return -1;
+        return FAIL_EXIT;
 
     lock_acquire(&filesys_lock);
     int bytes_read = file_read(file, buffer, size);
@@ -261,11 +268,11 @@ static int sys_write(int fd, const void* buffer, unsigned size) {
         return size;
     }
 
-    check_valid_fd(fd);
+    validate_fd(fd);
 
     struct file* file = get_file_from_fd(fd);
     if (file == NULL)
-        return -1;
+        return FAIL_EXIT;
 
     lock_acquire(&filesys_lock);
     int bytes_written = file_write(file, buffer, size);
@@ -275,11 +282,11 @@ static int sys_write(int fd, const void* buffer, unsigned size) {
 }
 
 static void sys_seek(int fd, unsigned position) {
-    check_valid_fd(fd);
+    validate_fd(fd);
 
     struct file* file = get_file_from_fd(fd);
     if (file == NULL)
-        return -1;
+        return FAIL_EXIT;
 
     lock_acquire(&filesys_lock);
     file_seek(file, position);
@@ -287,11 +294,11 @@ static void sys_seek(int fd, unsigned position) {
 }
 
 static unsigned sys_tell(int fd) {
-    check_valid_fd(fd);
+    validate_fd(fd);
 
     struct file* file = get_file_from_fd(fd);
     if (file == NULL)
-        return -1;
+        return FAIL_EXIT;
 
     lock_acquire(&filesys_lock);
     unsigned start = file_tell(file);
@@ -310,12 +317,12 @@ static int sys_exec(const char* file) {
     validate_string(file);
     char* f_cpy = palloc_get_page(0);
     if (f_cpy == NULL)
-        sys_exit(-1);
+        sys_exit(FAIL_EXIT);
 
     strlcpy(f_cpy, file, PGSIZE);
 
-    if (process_exec(f_cpy) == -1)
-        sys_exit(-1);
+    if (process_exec(f_cpy) == FAIL_EXIT)
+        sys_exit(FAIL_EXIT);
 
     NOT_REACHED();  // exec 성공하면 원래 프로세스는 돌아오지 않음
 }
@@ -330,42 +337,46 @@ static void* sys_mmap(void* addr,
                       int writable,
                       int fd,
                       off_t offset) {
-    validate_ptr(addr);
-    check_valid_fd(fd);
 
-    struct file* file = get_file_from_fd(fd);
-    if (file == NULL)
+    if(!validate_mmap_condition(addr, length, writable, fd, offset))
         return NULL;
 
-    lock_acquire(&filesys_lock);
+    struct file *file = get_file_from_fd(fd);
+    if (file == NULL || file_length(file) == 0)
+        return MMAP_FAIL;
 
+    lock_acquire(&filesys_lock);
+    void* result = do_mmap(addr, length, writable, file, offset);
     lock_release(&filesys_lock);
+    
+    return result;
 }
 
-static void sys_munmap(void* addr) {}
+static void sys_munmap(void* addr) {
+    // CHECK: page aligned, valid addr, user addr
+    if (pg_ofs(addr) != 0 || addr == NULL || !is_user_vaddr(addr))
+        sys_exit(FAIL_EXIT);
+    
+    validate_ptr(addr);
+    
+    do_munmap(addr);
+}
 
 /* ########### HELPER FUNCTIONS ############## */
 static void validate_ptr(void* ptr) {
     if (ptr == NULL || is_kernel_vaddr(ptr))  // if invalid ptr
-        sys_exit(-1);
+        sys_exit(FAIL_EXIT);
 }
 
-static void check_valid_fd(int fd) {
+static void validate_fd(int fd) {
     if (fd < MIN_FD || fd > MAX_FD)
-        sys_exit(-1);
+        sys_exit(FAIL_EXIT);
 }
 
 /* helper: 주소를 찔러서 (Touch) Page Fault를 유도 */
 static void try_prefault(char* addr, bool to_write) {
     validate_ptr(addr);
-
-    struct supplemental_page_table* spt = &thread_current()->spt;
-    struct page* page = spt_find_page(spt, pg_round_down(addr));
-
-    if (page != NULL && to_write && !page->writable) {
-        sys_exit(-1);
-    }
-
+    validate_writable_page(addr,to_write);
     /* 실제로 건드리기  (Pre-faulting) */
     if (to_write) {
         /* 쓰기 시도: 읽어서 다시 씀  (Dirty bit, Writable 체크) */
@@ -375,6 +386,15 @@ static void try_prefault(char* addr, bool to_write) {
         /* 읽기 시도: 그냥 읽어봄  (Present bit 체크) */
         volatile char dummy = *addr;
         (void)dummy;
+    }
+}
+
+static void validate_writable_page(char* addr, bool to_write) {
+    struct supplemental_page_table* spt = &thread_current()->spt;
+    struct page* page = spt_find_page(spt, pg_round_down(addr));
+
+    if (page != NULL && to_write && !page->writable) {
+        sys_exit(FAIL_EXIT);
     }
 }
 
@@ -394,7 +414,7 @@ static void validate_buffer(void* buffer, unsigned size, bool to_write) {
     }
 }
 
-void validate_string(const char* str) {
+static void validate_string(const char* str) {
     validate_ptr(str);
     while (*str != '\0') {
         validate_ptr(str);  // str이 valid page인지 확인
@@ -452,20 +472,38 @@ static struct file_descriptor* find_fd(struct thread* t, int fd) {
     return NULL;
 }
 
-/* fd를 통해 file 객체를 찾아 반환하는 헬퍼 함수 */
 static struct file* get_file_from_fd(int fd) {
-    /* 1. fd 범위 체크  (이미 check_valid_fd가 있다면 생략 가능하지만 안전을
-     * 위해)
-     */
+
     if (fd < 0 || fd >= MAX_FD)
         return NULL;
 
-    /* 2. fd_table에서 entry 찾기 */
-    struct file_descriptor* fd_struct = find_fd(thread_current(), fd);
+        struct file_descriptor* fd_struct = find_fd(thread_current(), fd);
 
     if (fd_struct == NULL)
         return NULL;
 
-    /* 3. file 객체 반환  (NULL일 수도 있음) */
     return fd_struct->fd_file;
+}
+
+static bool validate_mmap_condition(void* addr, size_t length, int writable, int fd, off_t offset) {
+    // addr 관련 검증
+    if (pg_ofs(addr) != 0 || // page-aligned
+        addr == NULL || // valid ptr
+        !is_user_vaddr(addr)) // user addr
+        return false;
+
+    if (length == 0)
+        return false;
+    
+    // 유효 fd 검사
+    if (fd < MIN_FD)
+        return false;
+    
+    // 연속 페이지 할당 가능 검사
+    for (void* cur = addr; cur < addr + length; cur += PGSIZE) {
+    if (spt_find_page(&thread_current()->spt, cur) != NULL)
+        return false;
+    }
+    
+    return true;
 }
